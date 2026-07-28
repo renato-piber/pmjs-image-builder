@@ -1,0 +1,123 @@
+Vamos iniciar a Sprint 1 do projeto pmjs-image-builder.
+
+CONTEXTO
+
+Este projeto será responsável por gerar imagens de sistema usadas pelo
+PMJS Deploy.
+
+Nesta sprint, o escopo deve ser mínimo: gerar apenas o rootfs.tar.gz.
+
+ESTRUTURA ATUAL
+
+pmjs-image-builder/
+├── build-image.sh
+├── VERSION
+├── README.md
+├── ARQUITETURA.md
+├── config/
+│   └── image.conf
+├── hooks/
+├── lib/
+│   ├── checks.sh
+│   ├── logs.sh
+│   ├── rootfs.sh
+│   └── ui.sh
+├── logs/
+└── output/
+
+REQUISITOS
+
+1. Usar Bash estrito:
+
+   set -Eeuo pipefail
+
+2. O build-image.sh deve apenas orquestrar o fluxo.
+
+3. Separar responsabilidades:
+
+   lib/ui.sh
+   - cabeçalho
+   - mensagens info, sucesso, aviso e erro
+
+   lib/logs.sh
+   - inicialização do log
+   - escrita de log
+   - caminho do arquivo de log
+
+   lib/checks.sh
+   - validar root
+   - validar dependências
+   - validar espaço livre
+   - validar diretórios
+   - validar que o destino não está dentro do filesystem capturado
+
+   lib/rootfs.sh
+   - montar comando tar
+   - gerar rootfs.tar.gz
+   - validar o arquivo gerado
+
+4. Carregar config/image.conf.
+
+5. Criar saída em:
+
+   output/pmjs-linux-<versão>/
+
+6. Gerar:
+
+   output/pmjs-linux-<versão>/rootfs.tar.gz
+
+7. Usar tar com:
+
+   --numeric-owner
+   --acls
+   --xattrs
+   --one-file-system
+
+8. Excluir obrigatoriamente:
+
+   /proc/*
+   /sys/*
+   /dev/*
+   /run/*
+   /tmp/*
+   /var/tmp/*
+   /mnt/*
+   /media/*
+   /home/*
+   /lost+found
+
+9. Manter os diretórios vazios no archive quando possível.
+
+10. Não incluir o próprio diretório de saída no rootfs.
+
+11. Verificar que o diretório de saída está em filesystem diferente da raiz,
+    ou abortar com mensagem clara.
+
+12. Não limpar automaticamente:
+    - machine-id
+    - logs
+    - SSH host keys
+    - cache
+    nesta sprint.
+
+13. Não gerar ainda:
+    - homefs.tar.gz
+    - manifest.json
+    - SHA256SUMS
+    - ISO
+
+14. Implementar cleanup com trap.
+
+15. Ao terminar, mostrar:
+    - arquivo gerado
+    - tamanho
+    - duração
+    - caminho do log
+
+16. Antes de implementar, apresente:
+    - arquitetura
+    - fluxo
+    - riscos
+    - comando tar proposto
+
+17. Depois implemente em commits pequenos e revisáveis.
