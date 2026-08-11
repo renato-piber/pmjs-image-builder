@@ -10,8 +10,14 @@ O escopo atual gera somente:
 output/pmjs-linux-<versão>/rootfs.tar.gz
 ```
 
-Não são gerados `homefs.tar.gz`, `manifest.json`, `SHA256SUMS` ou ISO. O build
-também não remove `machine-id`, logs, chaves SSH host ou caches.
+Não são gerados `homefs.tar.gz`, `manifest.json`, `SHA256SUMS` ou ISO.
+
+Antes de concluir o rootfs, o builder remove identidades da máquina-modelo sem
+alterar a origem: `/etc/machine-id`, host keys SSH e o estado, cache e logs do
+OCS Inventory não entram no archive. A configuração do OCS, `sshd_config` e a
+senha institucional do x11vnc são preservadas. No sistema instalado, systemd
+gera um novo `machine-id`, o agente OCS recria seu estado e um drop-in de
+`ssh.service` executa `ssh-keygen -A` antes de validar e iniciar o servidor SSH.
 
 Os pseudo-filesystems `/proc`, `/sys`, `/dev` e `/run` não fazem parte do
 archive. Esses diretórios são recriados ou montados pelo sistema durante a

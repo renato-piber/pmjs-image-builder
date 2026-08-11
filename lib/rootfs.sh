@@ -4,8 +4,9 @@ build_tar_command() {
     local source_root=$1
     local build_dir=$2
     local archive_file=$3
+    local generalization_staging=$4
     local output_pattern
-    local -n command_ref=$4
+    local -n command_ref=$5
 
     output_pattern="$(realpath -m --relative-to="${source_root}" "${build_dir}")"
     output_pattern="./${output_pattern#./}"
@@ -29,9 +30,19 @@ build_tar_command() {
         --exclude='./media/*'
         --exclude='./home/*'
         --exclude='./lost+found'
+        --exclude='./etc/machine-id'
+        --exclude='./etc/ssh/ssh_host_*'
+        --exclude='./var/lib/ocsinventory-agent'
+        --exclude='./var/lib/ocsinventory-agent/*'
+        --exclude='./var/cache/ocsinventory-agent'
+        --exclude='./var/cache/ocsinventory-agent/*'
+        --exclude='./var/log/ocsinventory-client'
+        --exclude='./var/log/ocsinventory-client/*'
         --exclude="${output_pattern}"
         --exclude="${output_pattern}/*"
         --directory="${source_root}"
+        .
+        --directory="${generalization_staging}"
         .
     )
 }
@@ -40,9 +51,14 @@ generate_rootfs() {
     local source_root=$1
     local build_dir=$2
     local archive_file=$3
+    local generalization_staging=$4
     local -a tar_command
+    local quoted_command
 
-    build_tar_command "${source_root}" "${build_dir}" "${archive_file}" tar_command
+    build_tar_command "${source_root}" "${build_dir}" "${archive_file}" \
+        "${generalization_staging}" tar_command
+    printf -v quoted_command '%q ' "${tar_command[@]}"
+    log_write INFO "Comando tar efetivo: ${quoted_command% }"
     log_write INFO "Executando GNU tar para capturar ${source_root}"
     "${tar_command[@]}" 2> >(while IFS= read -r line; do log_write WARN "tar: ${line}"; done)
 }
@@ -53,6 +69,19 @@ validate_rootfs() {
     local build_dir=$3
     local entry
     local output_pattern
+    local listing
+    local required_entry
+    local required_entries=(
+        ./etc/passwd
+        ./etc/group
+        ./etc/hostname
+        ./etc/ssh/sshd_config
+        ./etc/ocsinventory/ocsinventory-agent.cfg
+        ./etc/x11vnc.pass
+        ./usr/sbin/sshd
+        ./var/lib/dbus/machine-id
+        ./etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf
+    )
 
     output_pattern="$(realpath -m --relative-to="${source_root}" "${build_dir}")"
     output_pattern="./${output_pattern#./}"
@@ -66,6 +95,11 @@ validate_rootfs() {
         return 1
     }
 
+    listing="$(tar --list --gzip --file "${archive_file}")" || {
+        ui_error "Falha ao listar o rootfs: ${archive_file}"
+        return 1
+    }
+
     while IFS= read -r entry; do
         if [[ "${entry}" == "${output_pattern}" ||
               "${entry}" == "${output_pattern}/"* ]]; then
@@ -75,12 +109,37 @@ validate_rootfs() {
         case "${entry}" in
             ./proc|./proc/*|./sys|./sys/*|./dev|./dev/*|./run|./run/*|\
             ./tmp/?*|./var/tmp/?*|./mnt/?*|./media/?*|./home/?*|\
-            ./lost+found|./lost+found/*)
+            ./lost+found|./lost+found/*|./etc/machine-id|\
+            ./etc/ssh/ssh_host_*|./var/lib/ocsinventory-agent|\
+            ./var/lib/ocsinventory-agent/*|./var/cache/ocsinventory-agent|\
+            ./var/cache/ocsinventory-agent/*|./var/log/ocsinventory-client|\
+            ./var/log/ocsinventory-client/*)
                 ui_error "Conteúdo proibido encontrado no archive: ${entry}"
                 return 1
                 ;;
         esac
-    done < <(tar --list --gzip --file "${archive_file}")
+    done <<< "${listing}"
+
+    for required_entry in "${required_entries[@]}"; do
+        grep -Fqx -- "${required_entry}" <<< "${listing}" || {
+            ui_error "Entrada essencial ausente do rootfs: ${required_entry}"
+            return 1
+        }
+    done
+
+    tar --list --verbose --gzip --file "${archive_file}" \
+        ./var/lib/dbus/machine-id 2>/dev/null | \
+        grep -Eq -- ' -> (/etc/machine-id|\.\./\.\./\.\./etc/machine-id)$' || {
+        ui_error "Symlink /var/lib/dbus/machine-id inválido no rootfs"
+        return 1
+    }
+
+    tar --extract --to-stdout --gzip --file "${archive_file}" \
+        ./etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf | \
+        grep -Fqx -- 'ExecStartPre=/usr/bin/ssh-keygen -A' || {
+        ui_error "Regeneração de host keys SSH ausente do rootfs"
+        return 1
+    }
 
     tar --list --gzip --file "${archive_file}" >/dev/null
     log_write INFO "Integridade e exclusões do rootfs validadas"
