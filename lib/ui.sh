@@ -15,7 +15,7 @@ else
 fi
 
 ui_header() {
-    printf '%s\n' "${UI_BLUE}PMJS Image Builder — Sprint 1${UI_RESET}"
+    printf '%s\n' "${UI_BLUE}PMJS Image Builder — Sprint 2${UI_RESET}"
 }
 
 ui_info() {

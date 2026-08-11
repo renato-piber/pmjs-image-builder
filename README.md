@@ -2,15 +2,16 @@
 
 Gerador de imagens de sistema consumidas pelo PMJS Deploy.
 
-## Sprint 1
+## Sprint 2
 
 O escopo atual gera somente:
 
 ```text
 output/pmjs-linux-<versão>/rootfs.tar.gz
+output/pmjs-linux-<versão>/homefs.tar.gz
 ```
 
-Não são gerados `homefs.tar.gz`, `manifest.json`, `SHA256SUMS` ou ISO.
+Ainda não são gerados `manifest.json`, `SHA256SUMS` ou ISO.
 
 Antes de concluir o rootfs, o builder remove identidades da máquina-modelo sem
 alterar a origem: `/etc/machine-id`, host keys SSH e o estado, cache e logs do
@@ -23,11 +24,20 @@ Os pseudo-filesystems `/proc`, `/sys`, `/dev` e `/run` não fazem parte do
 archive. Esses diretórios são recriados ou montados pelo sistema durante a
 inicialização e não precisam ser armazenados na imagem.
 
+O `homefs.tar.gz` possui como raiz o nome do usuário (`usuario/`), pois o PMJS
+Deploy o extrai diretamente em `/home`. Somente configurações explicitamente
+permitidas são copiadas; caches, navegadores, lixeira, históricos e arquivos
+pessoais ficam fora da imagem. Os diretórios XDG padrão são incluídos vazios.
+O staging do homefs é criado em `/var/tmp` (com fallback para `/tmp`), separado
+do `OUTPUT_DIR`, para preservar ownership, ACLs e xattrs mesmo quando os
+artefatos finais são gravados em Ventoy, exFAT ou outro filesystem não POSIX.
+
 ## Requisitos
 
 - Linux e Bash 4.3 ou superior
 - execução como `root`
 - GNU tar com suporte a ACLs e atributos estendidos
+- rsync com suporte a ACLs e atributos estendidos
 - diretório de saída montado em filesystem diferente de `/`
 - ao menos `MIN_FREE_SPACE_GIB` livres no destino
 

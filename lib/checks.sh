@@ -7,13 +7,16 @@ check_config_file() {
 
 validate_config() {
     local variable
-    local required=(IMAGE_NAME IMAGE_VERSION OUTPUT_DIR LOG_DIR ROOTFS_FILENAME SOURCE_ROOT ROOTFS_COMPRESSION MIN_FREE_SPACE_GIB)
+    local required=(IMAGE_NAME IMAGE_VERSION OUTPUT_DIR LOG_DIR ROOTFS_FILENAME HOMEFS_FILENAME SOURCE_ROOT HOME_SOURCE HOME_USER ROOTFS_COMPRESSION MIN_FREE_SPACE_GIB HOMEFS_MAX_SIZE_MIB)
     for variable in "${required[@]}"; do
         [[ -n "${!variable:-}" ]] || { ui_error "Configuração obrigatória ausente: ${variable}"; return 1; }
     done
     [[ "${ROOTFS_COMPRESSION}" == gzip ]] || { ui_error "ROOTFS_COMPRESSION deve ser 'gzip' nesta sprint."; return 1; }
     [[ "${ROOTFS_FILENAME}" == rootfs.tar.gz ]] || { ui_error "ROOTFS_FILENAME deve ser 'rootfs.tar.gz' nesta sprint."; return 1; }
+    [[ "${HOMEFS_FILENAME}" == homefs.tar.gz ]] || { ui_error "HOMEFS_FILENAME deve ser 'homefs.tar.gz' nesta sprint."; return 1; }
     [[ "${MIN_FREE_SPACE_GIB}" =~ ^[0-9]+$ ]] || { ui_error "MIN_FREE_SPACE_GIB deve ser um inteiro não negativo."; return 1; }
+    [[ "${HOMEFS_MAX_SIZE_MIB}" =~ ^[1-9][0-9]*$ ]] || { ui_error "HOMEFS_MAX_SIZE_MIB deve ser um inteiro positivo."; return 1; }
+    [[ "${HOME_USER}" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || { ui_error "HOME_USER contém caracteres inválidos."; return 1; }
     [[ "${IMAGE_NAME}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || { ui_error "IMAGE_NAME contém caracteres inválidos."; return 1; }
     [[ "${IMAGE_VERSION}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || { ui_error "IMAGE_VERSION contém caracteres inválidos."; return 1; }
 }
@@ -36,7 +39,7 @@ check_root() {
 
 check_dependencies() {
     local command tar_version
-    local dependencies=(tar gzip stat df realpath readlink date mkdir mktemp install chmod find dirname basename mv rm tr tail awk grep)
+    local dependencies=(tar gzip rsync stat du df realpath readlink getent id date mkdir mktemp install chmod find dirname basename mv rm tr tail awk grep)
     for command in "${dependencies[@]}"; do
         command -v "${command}" >/dev/null 2>&1 || { ui_error "Dependência ausente: ${command}"; return 1; }
     done

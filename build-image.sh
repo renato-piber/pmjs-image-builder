@@ -12,12 +12,16 @@ source "${PROJECT_DIR}/lib/ui.sh"
 source "${PROJECT_DIR}/lib/checks.sh"
 # shellcheck source=lib/generalize.sh
 source "${PROJECT_DIR}/lib/generalize.sh"
+# shellcheck source=lib/homefs.sh
+source "${PROJECT_DIR}/lib/homefs.sh"
 # shellcheck source=lib/rootfs.sh
 source "${PROJECT_DIR}/lib/rootfs.sh"
 
 readonly START_TIME=${SECONDS}
 BUILD_SUCCEEDED=false
 ROOTFS_TEMP_FILE=""
+HOMEFS_TEMP_FILE=""
+HOMEFS_STAGING=""
 GENERALIZATION_STAGING=""
 GENERALIZATION_BUILD_DIR=""
 BUILD_DIR=""
@@ -33,6 +37,14 @@ cleanup() {
             "${GENERALIZATION_BUILD_DIR}" || exit_code=1
         GENERALIZATION_STAGING=""
         GENERALIZATION_BUILD_DIR=""
+    fi
+    if [[ -n "${HOMEFS_STAGING:-}" ]]; then
+        cleanup_homefs_staging "${HOMEFS_STAGING}" || exit_code=1
+        HOMEFS_STAGING=""
+    fi
+    if [[ -n "${HOMEFS_TEMP_FILE:-}" && -e "${HOMEFS_TEMP_FILE}" ]]; then
+        rm -f -- "${HOMEFS_TEMP_FILE}"
+        log_write WARN "Homefs temporário removido: ${HOMEFS_TEMP_FILE}"
     fi
     if [[ -n "${ROOTFS_TEMP_FILE:-}" && -e "${ROOTFS_TEMP_FILE}" ]]; then
         rm -f -- "${ROOTFS_TEMP_FILE}"
@@ -89,10 +101,34 @@ build_rootfs_artifact() {
     GENERALIZATION_BUILD_DIR=""
 }
 
+build_homefs_artifact() {
+    local home_source=$1 home_user=$2 home_uid=$3 home_gid=$4
+    local max_size_mib=$5 build_dir=$6 homefs_file=$7
+    local -a standard_directories
+
+    detect_home_standard_directories "${home_source}" standard_directories
+    prepare_homefs_staging "${home_source}" "${home_user}" "${home_uid}" "${home_gid}" \
+        standard_directories HOMEFS_STAGING
+    log_write INFO "Staging do homefs: ${HOMEFS_STAGING}"
+    log_write INFO "Filesystem do staging do homefs: $(stat --file-system --format='%T' -- "${HOMEFS_STAGING}")"
+    log_write INFO "Archive final do homefs: ${homefs_file}"
+    validate_homefs_staging "${HOMEFS_STAGING}" "${home_user}" "${home_uid}" "${home_gid}" \
+        "${max_size_mib}" "${standard_directories[@]}"
+
+    HOMEFS_TEMP_FILE="${homefs_file}.partial"
+    generate_homefs "${HOMEFS_STAGING}" "${home_user}" "${HOMEFS_TEMP_FILE}"
+    validate_homefs_archive "${HOMEFS_TEMP_FILE}" "${home_user}" "${standard_directories[@]}"
+    mv -f -- "${HOMEFS_TEMP_FILE}" "${homefs_file}"
+    HOMEFS_TEMP_FILE=""
+
+    cleanup_homefs_staging "${HOMEFS_STAGING}"
+    HOMEFS_STAGING=""
+}
+
 main() {
     local config_file="${PROJECT_DIR}/config/image.conf"
     local version_file="${PROJECT_DIR}/VERSION"
-    local elapsed size
+    local elapsed rootfs_size homefs_size home_uid home_gid
 
     ui_header
 
@@ -118,6 +154,7 @@ main() {
     BUILD_DIR="${OUTPUT_DIR}/${IMAGE_NAME}-${IMAGE_VERSION}"
     readonly BUILD_DIR
     readonly ROOTFS_FILE="${BUILD_DIR}/${ROOTFS_FILENAME}"
+    readonly HOMEFS_FILE="${BUILD_DIR}/${HOMEFS_FILENAME}"
 
     prepare_build_directory "${BUILD_DIR}"
     check_destination_filesystem "${SOURCE_ROOT}" "${BUILD_DIR}"
@@ -128,14 +165,22 @@ main() {
 
     build_rootfs_artifact "${SOURCE_ROOT}" "${BUILD_DIR}" "${ROOTFS_FILE}"
 
-    size="$(format_file_size "${ROOTFS_FILE}")"
+    detect_home_identity "${HOME_SOURCE}" "${HOME_USER}" home_uid home_gid
+    ui_info "Gerando ${HOMEFS_FILE}"
+    build_homefs_artifact "${HOME_SOURCE}" "${HOME_USER}" "${home_uid}" "${home_gid}" \
+        "${HOMEFS_MAX_SIZE_MIB}" "${BUILD_DIR}" "${HOMEFS_FILE}"
+
+    rootfs_size="$(format_file_size "${ROOTFS_FILE}")"
+    homefs_size="$(format_file_size "${HOMEFS_FILE}")"
     elapsed="$(( SECONDS - START_TIME ))"
     BUILD_SUCCEEDED=true
 
     log_write SUCCESS "Rootfs gerado, generalizado e validado: ${ROOTFS_FILE}"
+    log_write SUCCESS "Homefs gerado e validado: ${HOMEFS_FILE}"
     ui_success "Build concluído"
-    printf 'Arquivo: %s\nTamanho: %s\nDuração: %ss\nLog: %s\n' \
-        "${ROOTFS_FILE}" "${size}" "${elapsed}" "${LOG_FILE}"
+    printf 'Rootfs: %s (%s)\nHomefs: %s (%s)\nDuração: %ss\nLog: %s\n' \
+        "${ROOTFS_FILE}" "${rootfs_size}" "${HOMEFS_FILE}" "${homefs_size}" \
+        "${elapsed}" "${LOG_FILE}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
