@@ -27,7 +27,7 @@ mkdir -p -- \
     "${home_source}/.local/share/Trash/files" \
     "${home_source}/.cache" \
     "${home_source}/.mozilla" \
-    "${home_source}/Área de Trabalho" \
+    "${home_source}/Desktop" \
     "${home_source}/Downloads" \
     "${home_source}/Imagens" \
     "${build_dir}" \
@@ -44,8 +44,11 @@ printf '%s\n' 'history' > "${home_source}/.bash_history"
 printf '%s\n' 'personal' > "${home_source}/arquivo-pessoal.txt"
 printf '%s\n' 'download real' > "${home_source}/Downloads/arquivo.iso"
 printf '%s\n' 'imagem pessoal' > "${home_source}/Imagens/foto.jpg"
+printf '%s\n' '[Desktop Entry]' > "${home_source}/Desktop/teste.desktop"
+printf '%s\n' 'documento pessoal' > "${home_source}/Desktop/documento.pdf"
+chmod 0755 -- "${home_source}/Desktop/teste.desktop"
 cat > "${home_source}/.config/user-dirs.dirs" <<'EOF'
-XDG_DESKTOP_DIR="$HOME/Área de Trabalho"
+XDG_DESKTOP_DIR="$HOME/Desktop"
 XDG_DOCUMENTS_DIR="$HOME/Documentos"
 XDG_DOWNLOAD_DIR="$HOME/Downloads"
 XDG_PICTURES_DIR="$HOME/Imagens"
@@ -77,7 +80,8 @@ for required in \
     "${home_user}/.config/dconf/user" \
     "${home_user}/.local/share/applications/app.desktop" \
     "${home_user}/.local/share/applications/google-chrome.desktop" \
-    "${home_user}/Área de Trabalho/" \
+    "${home_user}/Desktop/" \
+    "${home_user}/Desktop/teste.desktop" \
     "${home_user}/Documentos/" \
     "${home_user}/Downloads/" \
     "${home_user}/Imagens/" \
@@ -90,7 +94,7 @@ done
 
 for forbidden_fragment in \
     'home/' '.config/google-chrome' '.mozilla' '.cache' '.local/share/Trash' \
-    '.bash_history' 'arquivo-pessoal.txt' 'arquivo.iso' 'foto.jpg'; do
+    '.bash_history' 'arquivo-pessoal.txt' 'arquivo.iso' 'foto.jpg' 'Desktop/documento.pdf'; do
     if printf '%s\n' "${entries[@]}" | grep -Fq -- "${forbidden_fragment}"; then
         printf 'Conteúdo proibido no homefs: %s\n' "${forbidden_fragment}" >&2
         exit 1
@@ -99,6 +103,9 @@ done
 
 profile_owner="$(tar --list --verbose --numeric-owner --gzip --file "${archive_file}" "${home_user}/" | awk 'NR == 1 { print $2 }')"
 [[ "${profile_owner}" == "${home_uid}/${home_gid}" ]]
+desktop_mode="$(tar --list --verbose --numeric-owner --gzip --file "${archive_file}" \
+    "${home_user}/Desktop/teste.desktop" | awk 'NR == 1 { print $1 }')"
+[[ "${desktop_mode}" == -rwxr-xr-x ]]
 if (( EUID == 0 )); then
     chrome_owner="$(tar --list --verbose --numeric-owner --gzip --file "${archive_file}" \
         "${home_user}/.local/share/applications/google-chrome.desktop" | awk 'NR == 1 { print $2 }')"

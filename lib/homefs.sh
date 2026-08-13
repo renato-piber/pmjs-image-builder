@@ -101,7 +101,7 @@ prepare_homefs_staging() {
     local home_source=$1 home_user=$2 home_uid=$3 home_gid=$4
     local -n standard_directories_ref=$5
     local -n staging_ref=$6
-    local relative source_path directory
+    local relative source_path directory desktop_directory desktop_path
 
     if [[ -d /var/tmp && -w /var/tmp ]] &&
        staging_ref="$(mktemp --directory --tmpdir=/var/tmp 'pmjs-homefs-staging.XXXXXX' 2>/dev/null)"; then
@@ -128,12 +128,29 @@ prepare_homefs_staging() {
         install -d -m 0755 -o "${home_uid}" -g "${home_gid}" -- \
             "${staging_ref}/${home_user}/${directory}"
     done
+
+    desktop_directory=${standard_directories_ref[0]}
+    source_path="${home_source}/${desktop_directory}"
+    if [[ -d "${source_path}" && ! -L "${source_path}" ]]; then
+        while IFS= read -r -d '' desktop_path; do
+            [[ -f "${desktop_path}" && ! -L "${desktop_path}" ]] || {
+                ui_error "Atalho Desktop não é arquivo regular: ${desktop_path}"
+                return 1
+            }
+            rsync -aAX --numeric-ids -- "${desktop_path}" \
+                "${staging_ref}/${home_user}/${desktop_directory}/"
+        done < <(find -P "${source_path}" -mindepth 1 -maxdepth 1 \
+            -name '*.desktop' -print0)
+    elif [[ -e "${source_path}" || -L "${source_path}" ]]; then
+        ui_error "Desktop da origem não é um diretório regular: ${source_path}"
+        return 1
+    fi
 }
 
 homefs_path_is_allowed() {
     local relative=$1 home_user=$2
     shift 2
-    local directory
+    local directory desktop_directory=${1:-}
 
     case "${relative}" in
         "${home_user}"|"${home_user}/.config"|"${home_user}/.local"|\
@@ -150,6 +167,11 @@ homefs_path_is_allowed() {
     esac
     for directory in "$@"; do
         [[ "${relative}" == "${home_user}/${directory}" ]] && return 0
+        if [[ "${directory}" == "${desktop_directory}" &&
+              "${relative}" == "${home_user}/${directory}/"*.desktop &&
+              "${relative#"${home_user}/${directory}/"}" != */* ]]; then
+            return 0
+        fi
     done
     return 1
 }

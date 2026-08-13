@@ -28,6 +28,8 @@ O `homefs.tar.gz` possui como raiz o nome do usuário (`usuario/`), pois o PMJS
 Deploy o extrai diretamente em `/home`. Somente configurações explicitamente
 permitidas são copiadas; caches, navegadores, lixeira, históricos e arquivos
 pessoais ficam fora da imagem. Os diretórios XDG padrão são incluídos vazios.
+Como exceção explícita, arquivos regulares `*.desktop` diretamente no Desktop
+detectado são preservados; nenhum outro conteúdo desse diretório é copiado.
 O staging do homefs é criado em `/var/tmp` (com fallback para `/tmp`), separado
 do `OUTPUT_DIR`, para preservar ownership, ACLs e xattrs mesmo quando os
 artefatos finais são gravados em Ventoy, exFAT ou outro filesystem não POSIX.

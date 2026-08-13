@@ -21,6 +21,18 @@ if validate_homefs_source_symlinks "${home_source}" "${home_source}/.config/auto
     exit 1
 fi
 
+mkdir -p -- "${home_source}/Desktop"
+touch -- "${test_root}/outside/target.desktop"
+ln -s -- "${test_root}/outside/target.desktop" "${home_source}/Desktop/link.desktop"
+desktop_staging=""
+standard_directories=(Desktop)
+if prepare_homefs_staging "${home_source}" "${home_user}" "${home_uid}" "${home_gid}" \
+    standard_directories desktop_staging; then
+    printf 'Symlink *.desktop foi aceito\n' >&2
+    exit 1
+fi
+[[ -z "${desktop_staging}" ]] || cleanup_homefs_staging "${desktop_staging}"
+
 staging="${test_root}/staging"
 mkdir -p -- "${staging}/${home_user}/.config/autostart" "${staging}/${home_user}/Desktop"
 mkfifo -- "${staging}/${home_user}/.config/autostart/channel"
