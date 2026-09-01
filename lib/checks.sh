@@ -17,6 +17,9 @@ validate_config() {
     [[ "${MIN_FREE_SPACE_GIB}" =~ ^[0-9]+$ ]] || { ui_error "MIN_FREE_SPACE_GIB deve ser um inteiro não negativo."; return 1; }
     [[ "${HOMEFS_MAX_SIZE_MIB}" =~ ^[1-9][0-9]*$ ]] || { ui_error "HOMEFS_MAX_SIZE_MIB deve ser um inteiro positivo."; return 1; }
     [[ "${HOME_USER}" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || { ui_error "HOME_USER contém caracteres inválidos."; return 1; }
+    if [[ "${SOURCE_ROOT}" == auto || "${HOME_SOURCE}" == auto ]]; then
+        [[ "${SOURCE_ROOT}" == auto && "${HOME_SOURCE}" == auto ]] || { ui_error "SOURCE_ROOT e HOME_SOURCE devem usar 'auto' juntos."; return 1; }
+    fi
     [[ "${IMAGE_NAME}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || { ui_error "IMAGE_NAME contém caracteres inválidos."; return 1; }
     [[ "${IMAGE_VERSION}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || { ui_error "IMAGE_VERSION contém caracteres inválidos."; return 1; }
 }
@@ -39,7 +42,7 @@ check_root() {
 
 check_dependencies() {
     local command tar_version
-    local dependencies=(tar gzip rsync stat du df realpath readlink getent id date mkdir mktemp install chmod find dirname basename mv rm tr tail awk grep)
+    local dependencies=(tar gzip rsync stat du df realpath readlink getent id date mkdir mktemp install chmod find dirname basename mv rm tr tail awk grep lsblk blkid mount umount)
     for command in "${dependencies[@]}"; do
         command -v "${command}" >/dev/null 2>&1 || { ui_error "Dependência ausente: ${command}"; return 1; }
     done
@@ -47,10 +50,55 @@ check_dependencies() {
     [[ "${tar_version}" == *"GNU tar"* ]] || { ui_error "GNU tar é obrigatório para ACLs e atributos estendidos."; return 1; }
 }
 
+source_root_has_linux_layout() {
+    local candidate=$1
+    [[ -d "${candidate}/etc" && -d "${candidate}/usr" && -d "${candidate}/var" ]]
+}
+
+resolve_source_root() {
+    local configured_root=$1
+    local -n resolved_ref=$2
+    local candidate rootfs_subvolume
+
+    [[ "${configured_root}" == /* ]] || {
+        ui_error "SOURCE_ROOT deve ser um caminho absoluto: ${configured_root}"
+        return 1
+    }
+    candidate="$(realpath -e -- "${configured_root}")" || {
+        ui_error "SOURCE_ROOT inexistente: ${configured_root}"
+        return 1
+    }
+    [[ -d "${candidate}" && -r "${candidate}" ]] || {
+        ui_error "Raiz de origem inválida: ${candidate}"
+        return 1
+    }
+
+    if source_root_has_linux_layout "${candidate}"; then
+        resolved_ref="${candidate}"
+        return 0
+    fi
+
+    rootfs_subvolume="${candidate}/@rootfs"
+    if [[ -d "${rootfs_subvolume}" && ! -L "${rootfs_subvolume}" ]] &&
+       source_root_has_linux_layout "${rootfs_subvolume}"; then
+        resolved_ref="$(realpath -e -- "${rootfs_subvolume}")"
+        return 0
+    fi
+
+    ui_error "Nenhuma raiz Linux válida encontrada em ${candidate} ou ${rootfs_subvolume}"
+    return 1
+}
+
 check_source_root() {
     local source_root=$1
-    [[ "${source_root}" == / ]] || { ui_error "SOURCE_ROOT deve ser '/' nesta sprint."; return 1; }
-    [[ -d "${source_root}" && -r "${source_root}" ]] || { ui_error "Raiz de origem inválida: ${source_root}"; return 1; }
+    [[ -d "${source_root}" && -r "${source_root}" ]] || {
+        ui_error "Raiz de origem inválida: ${source_root}"
+        return 1
+    }
+    source_root_has_linux_layout "${source_root}" || {
+        ui_error "Layout Linux incompleto em SOURCE_ROOT: ${source_root}"
+        return 1
+    }
 }
 
 prepare_directories() {

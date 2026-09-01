@@ -52,9 +52,10 @@ touch -- \
 printf '%s\n' 'machine-model-id' > "${source_root}/etc/machine-id"
 printf '%s\n' '<DEVICEID>model-device</DEVICEID>' > \
     "${source_root}/var/lib/ocsinventory-agent/server/ocsinv.conf"
-ln -s -- /etc/machine-id "${source_root}/var/lib/dbus/machine-id"
+printf '%s\n' 'dbus-machine-model-id' > "${source_root}/var/lib/dbus/machine-id"
 
 source "${PROJECT_DIR}/lib/generalize.sh"
+validate_generalization_source "${source_root}"
 prepare_generalization_staging "${build_dir}" generalization_staging
 
 generate_rootfs "${source_root}" "${build_dir}" "${archive_file}" \
@@ -66,7 +67,7 @@ mapfile -t archive_entries < <(tar --list --gzip --file "${archive_file}")
 for entry in "${archive_entries[@]}"; do
     case "${entry}" in
         ./sys|./sys/*|./proc|./proc/*|./dev|./dev/*|./run|./run/*|\
-        ./etc/machine-id|./etc/ssh/ssh_host_*|\
+        ./etc/machine-id|./var/lib/dbus/machine-id|./etc/ssh/ssh_host_*|\
         ./var/lib/ocsinventory-agent|./var/lib/ocsinventory-agent/*|\
         ./var/cache/ocsinventory-agent|./var/cache/ocsinventory-agent/*|\
         ./var/log/ocsinventory-client|./var/log/ocsinventory-client/*)
@@ -75,6 +76,21 @@ for entry in "${archive_entries[@]}"; do
             ;;
     esac
 done
+
+rm -- "${source_root}/var/lib/dbus/machine-id"
+validate_generalization_source "${source_root}"
+generalization_staging=""
+prepare_generalization_staging "${build_dir}" generalization_staging
+absent_archive_file="${build_dir}/rootfs-dbus-absent.tar.gz"
+generate_rootfs "${source_root}" "${build_dir}" "${absent_archive_file}" \
+    "${generalization_staging}"
+validate_rootfs "${absent_archive_file}" "${source_root}" "${build_dir}"
+if tar --list --gzip --file "${absent_archive_file}" | \
+   grep -Eq '^\./(etc/machine-id|var/lib/dbus/machine-id)/?$'; then
+    printf 'Identidade persistente encontrada com machine-id D-Bus ausente\n' >&2
+    exit 1
+fi
+cleanup_generalization_staging "${generalization_staging}" "${build_dir}"
 
 if tar --extract --to-stdout --gzip --file "${archive_file}" 2>/dev/null | \
    grep -Fq -- 'model-device'; then

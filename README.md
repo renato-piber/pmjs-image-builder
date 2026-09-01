@@ -43,12 +43,74 @@ artefatos finais são gravados em Ventoy, exFAT ou outro filesystem não POSIX.
 - diretório de saída montado em filesystem diferente de `/`
 - ao menos `MIN_FREE_SPACE_GIB` livres no destino
 
-Edite `config/image.conf` conforme necessário. Caminhos relativos são resolvidos
-a partir da raiz do projeto.
+Edite `config/image.conf` conforme necessário. `OUTPUT_DIR` e `LOG_DIR`
+relativos são resolvidos a partir da raiz do projeto; `SOURCE_ROOT` deve ser
+`auto` ou um caminho absoluto.
 
 ```bash
 sudo ./build-image.sh
 ```
+
+### Captura Live/offline
+
+No modo automático, configure:
+
+```text
+SOURCE_ROOT="auto"
+HOME_SOURCE="auto"
+```
+
+O builder enumera dispositivos com `lsblk`/`blkid`, ignora mídia removível,
+transporte USB e filesystems já montados, e monta cada candidato somente para
+leitura. Ele reconhece BTRFS com `@rootfs` e raízes tradicionais em ext2/3/4 ou
+XFS. Deve existir exatamente uma instalação válida; zero ou múltiplas opções
+causam falha segura.
+
+A home pode estar no mesmo BTRFS do root:
+
+```text
+partição BTRFS
+├── @rootfs/
+└── home/usuario/
+```
+
+ou em outra partição BTRFS:
+
+```text
+partição root                 partição home
+└── @rootfs/                  └── home/usuario/
+```
+
+Após localizar o root, o builder procura `home/$HOME_USER` separadamente. Para
+uma partição de home distinta, monta diretamente o subvolume `home` (ou
+`@home`) e usa `<mount-home>/$HOME_USER` como `HOME_SOURCE`.
+
+Os mounts temporários são criados em `/var/tmp` (fallback `/tmp`) e desmontados
+em sucesso, erro, `SIGINT` ou `SIGTERM`. Como somente mounts criados pelo
+builder são registrados, partições já montadas pelo usuário nunca são
+desmontadas.
+
+No modo manual, `SOURCE_ROOT` aceita tanto uma raiz Linux montada diretamente quanto o ponto de
+montagem superior de um filesystem BTRFS. Se o caminho configurado não contiver
+diretamente `etc/`, `usr/` e `var/`, o builder procura exatamente o subvolume
+`@rootfs` logo abaixo dele e usa esse diretório como raiz efetiva.
+
+Exemplo com a partição BTRFS montada sem selecionar subvolume:
+
+```text
+SOURCE_ROOT="/mnt/root"          # resolve para /mnt/root/@rootfs
+HOME_SOURCE="/mnt/root/home/usuario"
+```
+
+Também é permitido apontar diretamente para o subvolume:
+
+```text
+SOURCE_ROOT="/mnt/root/@rootfs"
+HOME_SOURCE="/mnt/root/home/usuario"
+```
+
+`HOME_SOURCE` é independente de `SOURCE_ROOT`: no modo manual, deve apontar para
+a home real montada e acessível.
 
 Ao final, o comando informa o arquivo, tamanho, duração e log. Um build
 interrompido remove apenas o arquivo `.partial`; artefatos válidos anteriores

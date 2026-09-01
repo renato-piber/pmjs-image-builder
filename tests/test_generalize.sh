@@ -17,6 +17,14 @@ touch -- "${source_root}/etc/machine-id"
 ln -s -- /etc/machine-id "${source_root}/var/lib/dbus/machine-id"
 
 validate_generalization_source "${source_root}"
+
+rm -- "${source_root}/var/lib/dbus/machine-id"
+printf '%s\n' 'dbus-model-id' > "${source_root}/var/lib/dbus/machine-id"
+validate_generalization_source "${source_root}"
+
+rm -- "${source_root}/var/lib/dbus/machine-id"
+validate_generalization_source "${source_root}"
+
 staging=""
 prepare_generalization_staging "${build_dir}" staging
 dropin="${staging}/etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf"
@@ -26,10 +34,17 @@ grep -Fqx -- 'ExecStartPre=/usr/sbin/sshd -t' "${dropin}"
 cleanup_generalization_staging "${staging}" "${build_dir}"
 [[ ! -e "${staging}" ]]
 
-ln -sfn -- /etc/hostname "${source_root}/var/lib/dbus/machine-id"
+ln -s -- /etc/hostname "${source_root}/var/lib/dbus/machine-id"
 if validate_generalization_source "${source_root}"; then
     printf 'Symlink D-Bus inválido foi aceito\n' >&2
     exit 1
 fi
 
-printf 'OK: staging e contrato de generalização validados\n'
+rm -- "${source_root}/var/lib/dbus/machine-id"
+mkdir -- "${source_root}/var/lib/dbus/machine-id"
+if validate_generalization_source "${source_root}"; then
+    printf 'Tipo inesperado de machine-id D-Bus foi aceito\n' >&2
+    exit 1
+fi
+
+printf 'OK: variantes de machine-id e staging de generalização validados\n'

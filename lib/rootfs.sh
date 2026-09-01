@@ -31,6 +31,7 @@ build_tar_command() {
         --exclude='./home/*'
         --exclude='./lost+found'
         --exclude='./etc/machine-id'
+        --exclude='./var/lib/dbus/machine-id'
         --exclude='./etc/ssh/ssh_host_*'
         --exclude='./var/lib/ocsinventory-agent'
         --exclude='./var/lib/ocsinventory-agent/*'
@@ -79,7 +80,6 @@ validate_rootfs() {
         ./etc/ocsinventory/ocsinventory-agent.cfg
         ./etc/x11vnc.pass
         ./usr/sbin/sshd
-        ./var/lib/dbus/machine-id
         ./etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf
     )
 
@@ -110,6 +110,7 @@ validate_rootfs() {
             ./proc|./proc/*|./sys|./sys/*|./dev|./dev/*|./run|./run/*|\
             ./tmp/?*|./var/tmp/?*|./mnt/?*|./media/?*|./home/?*|\
             ./lost+found|./lost+found/*|./etc/machine-id|\
+            ./var/lib/dbus/machine-id|\
             ./etc/ssh/ssh_host_*|./var/lib/ocsinventory-agent|\
             ./var/lib/ocsinventory-agent/*|./var/cache/ocsinventory-agent|\
             ./var/cache/ocsinventory-agent/*|./var/log/ocsinventory-client|\
@@ -126,13 +127,6 @@ validate_rootfs() {
             return 1
         }
     done
-
-    tar --list --verbose --gzip --file "${archive_file}" \
-        ./var/lib/dbus/machine-id 2>/dev/null | \
-        grep -Eq -- ' -> (/etc/machine-id|\.\./\.\./\.\./etc/machine-id)$' || {
-        ui_error "Symlink /var/lib/dbus/machine-id inválido no rootfs"
-        return 1
-    }
 
     tar --extract --to-stdout --gzip --file "${archive_file}" \
         ./etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf | \

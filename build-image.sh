@@ -10,6 +10,8 @@ source "${PROJECT_DIR}/lib/logs.sh"
 source "${PROJECT_DIR}/lib/ui.sh"
 # shellcheck source=lib/checks.sh
 source "${PROJECT_DIR}/lib/checks.sh"
+# shellcheck source=lib/source_detect.sh
+source "${PROJECT_DIR}/lib/source_detect.sh"
 # shellcheck source=lib/generalize.sh
 source "${PROJECT_DIR}/lib/generalize.sh"
 # shellcheck source=lib/homefs.sh
@@ -49,6 +51,9 @@ cleanup() {
     if [[ -n "${ROOTFS_TEMP_FILE:-}" && -e "${ROOTFS_TEMP_FILE}" ]]; then
         rm -f -- "${ROOTFS_TEMP_FILE}"
         log_write WARN "Arquivo temporário removido: ${ROOTFS_TEMP_FILE}"
+    fi
+    if [[ -n "${SOURCE_DETECT_DIR:-}" ]]; then
+        cleanup_detected_capture_source || exit_code=1
     fi
 
     if [[ "${BUILD_SUCCEEDED}" != true && ${exit_code} -ne 0 ]]; then
@@ -128,7 +133,7 @@ build_homefs_artifact() {
 main() {
     local config_file="${PROJECT_DIR}/config/image.conf"
     local version_file="${PROJECT_DIR}/VERSION"
-    local elapsed rootfs_size homefs_size home_uid home_gid
+    local elapsed rootfs_size homefs_size home_uid home_gid resolved_source_root
 
     ui_header
 
@@ -148,7 +153,23 @@ main() {
     log_write INFO "Iniciando build ${IMAGE_NAME}-${IMAGE_VERSION}"
     log_write INFO "Configuração carregada de ${config_file}"
 
+    if [[ "${SOURCE_ROOT}" == auto ]]; then
+        [[ "${HOME_SOURCE}" == auto ]] || {
+            ui_error "HOME_SOURCE também deve ser 'auto' quando SOURCE_ROOT='auto'"
+            return 1
+        }
+        detect_capture_sources "${HOME_USER}" SOURCE_ROOT HOME_SOURCE
+    fi
+    resolve_source_root "${SOURCE_ROOT}" resolved_source_root
+    if [[ "${resolved_source_root}" != "$(realpath -e -- "${SOURCE_ROOT}")" ]]; then
+        log_write INFO "Subvolume @rootfs detectado automaticamente: ${resolved_source_root}"
+    fi
+    SOURCE_ROOT="${resolved_source_root}"
+    readonly SOURCE_ROOT
+    readonly HOME_SOURCE
+    log_write INFO "Raiz efetiva da captura: ${SOURCE_ROOT}"
     check_source_root "${SOURCE_ROOT}"
+    validate_detected_capture_source "${SOURCE_ROOT}"
     prepare_directories "${OUTPUT_DIR}" "${LOG_DIR}"
 
     BUILD_DIR="${OUTPUT_DIR}/${IMAGE_NAME}-${IMAGE_VERSION}"
@@ -169,6 +190,8 @@ main() {
     ui_info "Gerando ${HOMEFS_FILE}"
     build_homefs_artifact "${HOME_SOURCE}" "${HOME_USER}" "${home_uid}" "${home_gid}" \
         "${HOMEFS_MAX_SIZE_MIB}" "${BUILD_DIR}" "${HOMEFS_FILE}"
+
+    cleanup_detected_capture_source
 
     rootfs_size="$(format_file_size "${ROOTFS_FILE}")"
     homefs_size="$(format_file_size "${HOMEFS_FILE}")"

@@ -49,6 +49,7 @@ printf '%s\n' "${archive_entries[@]}"
 
 for forbidden_entry in \
     ./etc/machine-id \
+    ./var/lib/dbus/machine-id \
     ./etc/ssh/ssh_host_rsa_key \
     ./var/lib/ocsinventory-agent/server/ocsinv.conf \
     ./var/cache/ocsinventory-agent/cache \
@@ -69,6 +70,7 @@ done
 
 for expected_option in \
     "--exclude=./etc/machine-id" \
+    "--exclude=./var/lib/dbus/machine-id" \
     "--exclude=./etc/ssh/ssh_host_\\*" \
     "--exclude=./var/lib/ocsinventory-agent" \
     "--exclude=./var/lib/ocsinventory-agent/\\*" \

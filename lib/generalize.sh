@@ -6,17 +6,23 @@ validate_generalization_source() {
     local link_target
     local resolved_target
 
-    [[ -L "${dbus_machine_id}" ]] || {
-        ui_error "Esperado symlink de D-Bus em /var/lib/dbus/machine-id"
-        return 1
-    }
-    link_target="$(readlink -- "${dbus_machine_id}")"
-    resolved_target="$(realpath -m -- "$(dirname -- "${dbus_machine_id}")/${link_target}")"
-    [[ "${link_target}" == /etc/machine-id ||
-       "${resolved_target}" == "${source_root%/}/etc/machine-id" ]] || {
-        ui_error "/var/lib/dbus/machine-id não aponta para /etc/machine-id"
-        return 1
-    }
+    if [[ -L "${dbus_machine_id}" ]]; then
+        link_target="$(readlink -- "${dbus_machine_id}")"
+        if [[ "${link_target}" == /* ]]; then
+            resolved_target="${source_root%/}${link_target}"
+        else
+            resolved_target="$(realpath -m -- "$(dirname -- "${dbus_machine_id}")/${link_target}")"
+        fi
+        [[ "${resolved_target}" == "${source_root%/}/etc/machine-id" ]] || {
+            ui_error "/var/lib/dbus/machine-id não aponta para /etc/machine-id"
+            return 1
+        }
+    elif [[ -e "${dbus_machine_id}" ]]; then
+        [[ -f "${dbus_machine_id}" ]] || {
+            ui_error "Tipo inesperado em /var/lib/dbus/machine-id"
+            return 1
+        }
+    fi
 }
 
 prepare_generalization_staging() {
