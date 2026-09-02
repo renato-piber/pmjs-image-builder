@@ -2,16 +2,38 @@
 
 Gerador de imagens de sistema consumidas pelo PMJS Deploy.
 
-## Sprint 2
+## Contrato da imagem
 
-O escopo atual gera somente:
+O builder gera archives em gzip ou Zstandard e publica metadados de integridade:
 
 ```text
-output/pmjs-linux-<versão>/rootfs.tar.gz
-output/pmjs-linux-<versão>/homefs.tar.gz
+output/pmjs-linux-<versão>/
+├── rootfs.tar.zst       # ou rootfs.tar.gz
+├── homefs.tar.zst       # ou homefs.tar.gz
+├── SHA256SUMS
+└── manifest.json
 ```
 
-Ainda não são gerados `manifest.json`, `SHA256SUMS` ou ISO.
+`SHA256SUMS` cobre somente os dois archives finais e é verificado pelo próprio
+builder. `manifest.json` usa schema 1 e registra nomes, tamanhos, SHA-256,
+compressão, versão, arquitetura, distribuição e kernel do builder, sem identidades da
+máquina-modelo. Cada arquivo é criado como `.partial`, validado e publicado por
+rename. Metadados antigos são retirados antes de substituir os archives, de modo
+que uma falha nunca apresente uma combinação nova como imagem válida.
+
+Zstandard nível 3 é o padrão por priorizar instalação e descompressão rápidas.
+Gzip permanece disponível para compatibilidade. A escolha vale igualmente para
+rootfs e homefs e é feita em `config/image.conf`:
+
+```text
+IMAGE_COMPRESSION="zstd"   # gera .tar.zst
+ZSTD_LEVEL=3
+ROOTFS_FILENAME="auto"
+HOMEFS_FILENAME="auto"
+```
+
+Para gerar gzip, use `IMAGE_COMPRESSION="gzip"`; os nomes serão resolvidos
+automaticamente para `.tar.gz`.
 
 Antes de concluir o rootfs, o builder remove identidades da máquina-modelo sem
 alterar a origem: `/etc/machine-id`, host keys SSH e o estado, cache e logs do
@@ -39,7 +61,10 @@ artefatos finais são gravados em Ventoy, exFAT ou outro filesystem não POSIX.
 - Linux e Bash 4.3 ou superior
 - execução como `root`
 - GNU tar com suporte a ACLs e atributos estendidos
+- gzip; para `IMAGE_COMPRESSION="zstd"`, também `zstd`
 - rsync com suporte a ACLs e atributos estendidos
+- Python 3 (serialização e validação robusta do manifest JSON)
+- sha256sum
 - diretório de saída montado em filesystem diferente de `/`
 - ao menos `MIN_FREE_SPACE_GIB` livres no destino
 
@@ -112,9 +137,10 @@ HOME_SOURCE="/mnt/root/home/usuario"
 `HOME_SOURCE` é independente de `SOURCE_ROOT`: no modo manual, deve apontar para
 a home real montada e acessível.
 
-Ao final, o comando informa o arquivo, tamanho, duração e log. Um build
-interrompido remove apenas o arquivo `.partial`; artefatos válidos anteriores
-não são apagados.
+Ao final, o comando informa algoritmo, arquivos, tamanhos, tempos de preparação,
+geração/validação e metadata, duração total e log. Um build
+interrompido remove os arquivos `.partial`. Metadados de uma execução anterior
+são invalidados antes da substituição dos archives.
 
 > A captura ocorre sobre um sistema ativo. Para consistência forte, execute em
 > um snapshot ou ambiente sem escritas concorrentes.

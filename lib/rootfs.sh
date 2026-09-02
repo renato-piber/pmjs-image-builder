@@ -5,16 +5,20 @@ build_tar_command() {
     local build_dir=$2
     local archive_file=$3
     local generalization_staging=$4
+    local compression=${5:-gzip}
+    local zstd_level=${6:-3}
     local output_pattern
-    local -n command_ref=$5
+    local -n command_ref=$7
+    local -a compression_options
 
     output_pattern="$(realpath -m --relative-to="${source_root}" "${build_dir}")"
     output_pattern="./${output_pattern#./}"
 
+    archive_tar_create_options "${compression}" "${zstd_level}" compression_options
     command_ref=(
         tar
         --create
-        --gzip
+        "${compression_options[@]}"
         --file "${archive_file}"
         --numeric-owner
         --acls
@@ -53,11 +57,13 @@ generate_rootfs() {
     local build_dir=$2
     local archive_file=$3
     local generalization_staging=$4
+    local compression=${5:-gzip}
+    local zstd_level=${6:-3}
     local -a tar_command
     local quoted_command
 
     build_tar_command "${source_root}" "${build_dir}" "${archive_file}" \
-        "${generalization_staging}" tar_command
+        "${generalization_staging}" "${compression}" "${zstd_level}" tar_command
     printf -v quoted_command '%q ' "${tar_command[@]}"
     log_write INFO "Comando tar efetivo: ${quoted_command% }"
     log_write INFO "Executando GNU tar para capturar ${source_root}"
@@ -68,10 +74,12 @@ validate_rootfs() {
     local archive_file=$1
     local source_root=$2
     local build_dir=$3
+    local compression=${4:-gzip}
     local entry
     local output_pattern
     local listing
     local required_entry
+    local -a read_options
     local required_entries=(
         ./etc/passwd
         ./etc/group
@@ -90,12 +98,13 @@ validate_rootfs() {
         ui_error "O rootfs gerado está vazio: ${archive_file}"
         return 1
     }
-    gzip -t -- "${archive_file}" || {
-        ui_error "Falha na integridade gzip: ${archive_file}"
+    validate_archive_compression "${archive_file}" "${compression}" || {
+        ui_error "Falha na integridade ${compression}: ${archive_file}"
         return 1
     }
 
-    listing="$(tar --list --gzip --file "${archive_file}")" || {
+    archive_tar_read_options "${compression}" read_options
+    listing="$(tar --list "${read_options[@]}" --file "${archive_file}")" || {
         ui_error "Falha ao listar o rootfs: ${archive_file}"
         return 1
     }
@@ -128,14 +137,14 @@ validate_rootfs() {
         }
     done
 
-    tar --extract --to-stdout --gzip --file "${archive_file}" \
+    tar --extract --to-stdout "${read_options[@]}" --file "${archive_file}" \
         ./etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf | \
         grep -Fqx -- 'ExecStartPre=/usr/bin/ssh-keygen -A' || {
         ui_error "Regeneração de host keys SSH ausente do rootfs"
         return 1
     }
 
-    tar --list --gzip --file "${archive_file}" >/dev/null
+    tar --list "${read_options[@]}" --file "${archive_file}" >/dev/null
     log_write INFO "Integridade e exclusões do rootfs validadas"
 }
 

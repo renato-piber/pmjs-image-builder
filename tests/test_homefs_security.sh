@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 readonly TEST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly PROJECT_DIR="$(cd -- "${TEST_DIR}/.." && pwd -P)"
+source "${PROJECT_DIR}/lib/archive.sh"
 source "${PROJECT_DIR}/lib/homefs.sh"
 
 ui_error() { :; }

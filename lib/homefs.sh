@@ -239,7 +239,10 @@ validate_homefs_staging() {
 
 generate_homefs() {
     local staging_dir=$1 home_user=$2 archive_file=$3
-    tar --create --gzip --file "${archive_file}" --numeric-owner --acls --xattrs \
+    local compression=${4:-gzip} zstd_level=${5:-3}
+    local -a compression_options
+    archive_tar_create_options "${compression}" "${zstd_level}" compression_options
+    tar --create "${compression_options[@]}" --file "${archive_file}" --numeric-owner --acls --xattrs \
         --directory="${staging_dir}" "${home_user}"
 }
 
@@ -247,10 +250,16 @@ validate_homefs_archive() {
     local archive_file=$1 home_user=$2
     shift 2
     local listing entry normalized first_useful="" directory
+    local compression=${IMAGE_COMPRESSION:-gzip}
+    local -a read_options
 
     [[ -s "${archive_file}" ]] || { ui_error "homefs vazio: ${archive_file}"; return 1; }
-    gzip -t -- "${archive_file}" || { ui_error "Falha gzip no homefs: ${archive_file}"; return 1; }
-    listing="$(tar --list --gzip --file "${archive_file}")" || {
+    validate_archive_compression "${archive_file}" "${compression}" || {
+        ui_error "Falha ${compression} no homefs: ${archive_file}"
+        return 1
+    }
+    archive_tar_read_options "${compression}" read_options
+    listing="$(tar --list "${read_options[@]}" --file "${archive_file}")" || {
         ui_error "Falha ao listar homefs: ${archive_file}"
         return 1
     }
@@ -287,7 +296,7 @@ validate_homefs_archive() {
             return 1
         }
     done
-    tar --list --gzip --file "${archive_file}" >/dev/null
+    tar --list "${read_options[@]}" --file "${archive_file}" >/dev/null
 }
 
 cleanup_homefs_staging() {

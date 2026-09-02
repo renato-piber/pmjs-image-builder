@@ -7,13 +7,14 @@ check_config_file() {
 
 validate_config() {
     local variable
-    local required=(IMAGE_NAME IMAGE_VERSION OUTPUT_DIR LOG_DIR ROOTFS_FILENAME HOMEFS_FILENAME SOURCE_ROOT HOME_SOURCE HOME_USER ROOTFS_COMPRESSION MIN_FREE_SPACE_GIB HOMEFS_MAX_SIZE_MIB)
+    local required=(IMAGE_NAME IMAGE_VERSION OUTPUT_DIR LOG_DIR ROOTFS_FILENAME HOMEFS_FILENAME SOURCE_ROOT HOME_SOURCE HOME_USER IMAGE_COMPRESSION ZSTD_LEVEL MIN_FREE_SPACE_GIB HOMEFS_MAX_SIZE_MIB)
     for variable in "${required[@]}"; do
         [[ -n "${!variable:-}" ]] || { ui_error "Configuração obrigatória ausente: ${variable}"; return 1; }
     done
-    [[ "${ROOTFS_COMPRESSION}" == gzip ]] || { ui_error "ROOTFS_COMPRESSION deve ser 'gzip' nesta sprint."; return 1; }
-    [[ "${ROOTFS_FILENAME}" == rootfs.tar.gz ]] || { ui_error "ROOTFS_FILENAME deve ser 'rootfs.tar.gz' nesta sprint."; return 1; }
-    [[ "${HOMEFS_FILENAME}" == homefs.tar.gz ]] || { ui_error "HOMEFS_FILENAME deve ser 'homefs.tar.gz' nesta sprint."; return 1; }
+    [[ "${IMAGE_COMPRESSION}" == gzip || "${IMAGE_COMPRESSION}" == zstd ]] || { ui_error "IMAGE_COMPRESSION deve ser 'gzip' ou 'zstd'."; return 1; }
+    [[ "${ZSTD_LEVEL}" =~ ^[1-9][0-9]*$ && ${ZSTD_LEVEL} -le 19 ]] || { ui_error "ZSTD_LEVEL deve estar entre 1 e 19."; return 1; }
+    [[ "${ROOTFS_FILENAME}" == auto ]] || { ui_error "ROOTFS_FILENAME deve ser 'auto'."; return 1; }
+    [[ "${HOMEFS_FILENAME}" == auto ]] || { ui_error "HOMEFS_FILENAME deve ser 'auto'."; return 1; }
     [[ "${MIN_FREE_SPACE_GIB}" =~ ^[0-9]+$ ]] || { ui_error "MIN_FREE_SPACE_GIB deve ser um inteiro não negativo."; return 1; }
     [[ "${HOMEFS_MAX_SIZE_MIB}" =~ ^[1-9][0-9]*$ ]] || { ui_error "HOMEFS_MAX_SIZE_MIB deve ser um inteiro positivo."; return 1; }
     [[ "${HOME_USER}" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || { ui_error "HOME_USER contém caracteres inválidos."; return 1; }
@@ -42,12 +43,22 @@ check_root() {
 
 check_dependencies() {
     local command tar_version
-    local dependencies=(tar gzip rsync stat du df realpath readlink getent id date mkdir mktemp install chmod find dirname basename mv rm tr tail awk grep lsblk blkid mount umount)
+    local dependencies=(tar gzip rsync stat du df realpath readlink getent id date mkdir mktemp install chmod find dirname basename mv rm tr tail awk grep lsblk blkid mount umount sha256sum python3 wc uname)
     for command in "${dependencies[@]}"; do
         command -v "${command}" >/dev/null 2>&1 || { ui_error "Dependência ausente: ${command}"; return 1; }
     done
     tar_version="$(tar --version)"
     [[ "${tar_version}" == *"GNU tar"* ]] || { ui_error "GNU tar é obrigatório para ACLs e atributos estendidos."; return 1; }
+}
+
+check_compression_dependency() {
+    local compression=$1
+    if [[ "${compression}" == zstd ]]; then
+        command -v zstd >/dev/null 2>&1 || {
+            ui_error "Compressão zstd selecionada, mas o binário 'zstd' não está instalado."
+            return 1
+        }
+    fi
 }
 
 source_root_has_linux_layout() {

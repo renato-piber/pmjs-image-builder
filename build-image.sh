@@ -10,6 +10,8 @@ source "${PROJECT_DIR}/lib/logs.sh"
 source "${PROJECT_DIR}/lib/ui.sh"
 # shellcheck source=lib/checks.sh
 source "${PROJECT_DIR}/lib/checks.sh"
+# shellcheck source=lib/archive.sh
+source "${PROJECT_DIR}/lib/archive.sh"
 # shellcheck source=lib/source_detect.sh
 source "${PROJECT_DIR}/lib/source_detect.sh"
 # shellcheck source=lib/generalize.sh
@@ -18,15 +20,23 @@ source "${PROJECT_DIR}/lib/generalize.sh"
 source "${PROJECT_DIR}/lib/homefs.sh"
 # shellcheck source=lib/rootfs.sh
 source "${PROJECT_DIR}/lib/rootfs.sh"
+# shellcheck source=lib/metadata.sh
+source "${PROJECT_DIR}/lib/metadata.sh"
 
 readonly START_TIME=${SECONDS}
 BUILD_SUCCEEDED=false
 ROOTFS_TEMP_FILE=""
 HOMEFS_TEMP_FILE=""
+CHECKSUM_TEMP_FILE=""
+MANIFEST_TEMP_FILE=""
 HOMEFS_STAGING=""
 GENERALIZATION_STAGING=""
 GENERALIZATION_BUILD_DIR=""
 BUILD_DIR=""
+ROOTFS_GENERATE_SECONDS=0
+ROOTFS_VALIDATE_SECONDS=0
+HOMEFS_GENERATE_SECONDS=0
+HOMEFS_VALIDATE_SECONDS=0
 
 cleanup() {
     local exit_code=$?
@@ -51,6 +61,12 @@ cleanup() {
     if [[ -n "${ROOTFS_TEMP_FILE:-}" && -e "${ROOTFS_TEMP_FILE}" ]]; then
         rm -f -- "${ROOTFS_TEMP_FILE}"
         log_write WARN "Arquivo temporário removido: ${ROOTFS_TEMP_FILE}"
+    fi
+    if [[ -n "${CHECKSUM_TEMP_FILE:-}" && -e "${CHECKSUM_TEMP_FILE}" ]]; then
+        rm -f -- "${CHECKSUM_TEMP_FILE}"
+    fi
+    if [[ -n "${MANIFEST_TEMP_FILE:-}" && -e "${MANIFEST_TEMP_FILE}" ]]; then
+        rm -f -- "${MANIFEST_TEMP_FILE}"
     fi
     if [[ -n "${SOURCE_DETECT_DIR:-}" ]]; then
         cleanup_detected_capture_source || exit_code=1
@@ -87,7 +103,8 @@ trap 'on_signal TERM' TERM
 build_rootfs_artifact() {
     local source_root=$1
     local build_dir=$2
-    local rootfs_file=$3
+    local rootfs_file=$3 compression=${4:-gzip} zstd_level=${5:-3}
+    local phase_start
 
     validate_generalization_source "${source_root}"
     GENERALIZATION_BUILD_DIR="${build_dir}"
@@ -95,9 +112,13 @@ build_rootfs_artifact() {
     log_write INFO "Staging de generalização: ${GENERALIZATION_STAGING}"
 
     ROOTFS_TEMP_FILE="${rootfs_file}.partial"
+    phase_start=${SECONDS}
     generate_rootfs "${source_root}" "${build_dir}" "${ROOTFS_TEMP_FILE}" \
-        "${GENERALIZATION_STAGING}"
-    validate_rootfs "${ROOTFS_TEMP_FILE}" "${source_root}" "${build_dir}"
+        "${GENERALIZATION_STAGING}" "${compression}" "${zstd_level}"
+    ROOTFS_GENERATE_SECONDS=$(( SECONDS - phase_start ))
+    phase_start=${SECONDS}
+    validate_rootfs "${ROOTFS_TEMP_FILE}" "${source_root}" "${build_dir}" "${compression}"
+    ROOTFS_VALIDATE_SECONDS=$(( SECONDS - phase_start ))
     mv -f -- "${ROOTFS_TEMP_FILE}" "${rootfs_file}"
     ROOTFS_TEMP_FILE=""
 
@@ -109,6 +130,7 @@ build_rootfs_artifact() {
 build_homefs_artifact() {
     local home_source=$1 home_user=$2 home_uid=$3 home_gid=$4
     local max_size_mib=$5 build_dir=$6 homefs_file=$7
+    local compression=${8:-gzip} zstd_level=${9:-3} phase_start
     local -a standard_directories
 
     detect_home_standard_directories "${home_source}" standard_directories
@@ -121,8 +143,13 @@ build_homefs_artifact() {
         "${max_size_mib}" "${standard_directories[@]}"
 
     HOMEFS_TEMP_FILE="${homefs_file}.partial"
-    generate_homefs "${HOMEFS_STAGING}" "${home_user}" "${HOMEFS_TEMP_FILE}"
+    phase_start=${SECONDS}
+    generate_homefs "${HOMEFS_STAGING}" "${home_user}" "${HOMEFS_TEMP_FILE}" \
+        "${compression}" "${zstd_level}"
+    HOMEFS_GENERATE_SECONDS=$(( SECONDS - phase_start ))
+    phase_start=${SECONDS}
     validate_homefs_archive "${HOMEFS_TEMP_FILE}" "${home_user}" "${standard_directories[@]}"
+    HOMEFS_VALIDATE_SECONDS=$(( SECONDS - phase_start ))
     mv -f -- "${HOMEFS_TEMP_FILE}" "${homefs_file}"
     HOMEFS_TEMP_FILE=""
 
@@ -130,10 +157,28 @@ build_homefs_artifact() {
     HOMEFS_STAGING=""
 }
 
+build_metadata_artifacts() {
+    local build_dir=$1 rootfs_file=$2 homefs_file=$3 checksum_file=$4 manifest_file=$5
+    local image_name=$6 image_version=$7 builder_version=$8 compression=$9 source_root=${10}
+
+    CHECKSUM_TEMP_FILE="${checksum_file}.partial"
+    MANIFEST_TEMP_FILE="${manifest_file}.partial"
+    generate_checksums "${build_dir}" "${rootfs_file}" "${homefs_file}" "${CHECKSUM_TEMP_FILE}"
+    validate_checksums "${build_dir}" "${CHECKSUM_TEMP_FILE}"
+    generate_manifest "${MANIFEST_TEMP_FILE}" "${image_name}" "${image_version}" \
+        "${builder_version}" "${compression}" "${rootfs_file}" "${homefs_file}" "${source_root}"
+    validate_manifest "${MANIFEST_TEMP_FILE}" "${rootfs_file}" "${homefs_file}" "${compression}"
+    mv -f -- "${CHECKSUM_TEMP_FILE}" "${checksum_file}"
+    CHECKSUM_TEMP_FILE=""
+    mv -f -- "${MANIFEST_TEMP_FILE}" "${manifest_file}"
+    MANIFEST_TEMP_FILE=""
+}
+
 main() {
     local config_file="${PROJECT_DIR}/config/image.conf"
     local version_file="${PROJECT_DIR}/VERSION"
     local elapsed rootfs_size homefs_size home_uid home_gid resolved_source_root
+    local extension preparation_seconds metadata_seconds metadata_start builder_version
 
     ui_header
 
@@ -143,7 +188,12 @@ main() {
     # shellcheck source=config/image.conf
     source "${config_file}"
     validate_config
+    check_compression_dependency "${IMAGE_COMPRESSION}"
     validate_version_file "${version_file}" "${IMAGE_VERSION}"
+    builder_version="$(tr -d '[:space:]' < "${version_file}")"
+    extension="$(archive_extension "${IMAGE_COMPRESSION}")"
+    ROOTFS_FILENAME="rootfs.${extension}"
+    HOMEFS_FILENAME="homefs.${extension}"
 
     OUTPUT_DIR="$(resolve_project_path "${PROJECT_DIR}" "${OUTPUT_DIR}")"
     LOG_DIR="$(resolve_project_path "${PROJECT_DIR}" "${LOG_DIR}")"
@@ -176,20 +226,38 @@ main() {
     readonly BUILD_DIR
     readonly ROOTFS_FILE="${BUILD_DIR}/${ROOTFS_FILENAME}"
     readonly HOMEFS_FILE="${BUILD_DIR}/${HOMEFS_FILENAME}"
+    readonly CHECKSUM_FILE="${BUILD_DIR}/SHA256SUMS"
+    readonly MANIFEST_FILE="${BUILD_DIR}/manifest.json"
 
     prepare_build_directory "${BUILD_DIR}"
+    rm -f -- "${CHECKSUM_FILE}" "${MANIFEST_FILE}" \
+        "${CHECKSUM_FILE}.partial" "${MANIFEST_FILE}.partial"
     check_destination_filesystem "${SOURCE_ROOT}" "${BUILD_DIR}"
     check_free_space "${BUILD_DIR}" "${MIN_FREE_SPACE_GIB}"
     ui_info "Gerando ${ROOTFS_FILE}"
     log_write INFO "A captura é feita com o sistema ativo e pode refletir alterações concorrentes."
     log_write INFO "Identidades da máquina-modelo serão removidas do rootfs."
+    if [[ "${IMAGE_COMPRESSION}" == zstd ]]; then
+        log_write INFO "Compressão: zstd; nível: ${ZSTD_LEVEL}"
+    else
+        log_write INFO "Compressão: gzip; nível padrão do GNU tar"
+    fi
+    preparation_seconds=$(( SECONDS - START_TIME ))
 
-    build_rootfs_artifact "${SOURCE_ROOT}" "${BUILD_DIR}" "${ROOTFS_FILE}"
+    build_rootfs_artifact "${SOURCE_ROOT}" "${BUILD_DIR}" "${ROOTFS_FILE}" \
+        "${IMAGE_COMPRESSION}" "${ZSTD_LEVEL}"
 
     detect_home_identity "${HOME_SOURCE}" "${HOME_USER}" home_uid home_gid
     ui_info "Gerando ${HOMEFS_FILE}"
     build_homefs_artifact "${HOME_SOURCE}" "${HOME_USER}" "${home_uid}" "${home_gid}" \
-        "${HOMEFS_MAX_SIZE_MIB}" "${BUILD_DIR}" "${HOMEFS_FILE}"
+        "${HOMEFS_MAX_SIZE_MIB}" "${BUILD_DIR}" "${HOMEFS_FILE}" \
+        "${IMAGE_COMPRESSION}" "${ZSTD_LEVEL}"
+
+    metadata_start=${SECONDS}
+    build_metadata_artifacts "${BUILD_DIR}" "${ROOTFS_FILE}" "${HOMEFS_FILE}" \
+        "${CHECKSUM_FILE}" "${MANIFEST_FILE}" "${IMAGE_NAME}" "${IMAGE_VERSION}" \
+        "${builder_version}" "${IMAGE_COMPRESSION}" "${SOURCE_ROOT}"
+    metadata_seconds=$(( SECONDS - metadata_start ))
 
     cleanup_detected_capture_source
 
@@ -200,10 +268,17 @@ main() {
 
     log_write SUCCESS "Rootfs gerado, generalizado e validado: ${ROOTFS_FILE}"
     log_write SUCCESS "Homefs gerado e validado: ${HOMEFS_FILE}"
+    log_write SUCCESS "Metadados gerados e validados: ${CHECKSUM_FILE}, ${MANIFEST_FILE}"
+    log_write INFO "Tamanho rootfs: ${rootfs_size}; tamanho homefs: ${homefs_size}"
+    log_write INFO "Tempos: preparação=${preparation_seconds}s; rootfs_geração=${ROOTFS_GENERATE_SECONDS}s; rootfs_validação=${ROOTFS_VALIDATE_SECONDS}s; homefs_geração=${HOMEFS_GENERATE_SECONDS}s; homefs_validação=${HOMEFS_VALIDATE_SECONDS}s; metadata=${metadata_seconds}s; total=${elapsed}s"
     ui_success "Build concluído"
-    printf 'Rootfs: %s (%s)\nHomefs: %s (%s)\nDuração: %ss\nLog: %s\n' \
+    printf 'Rootfs: %s (%s)\nHomefs: %s (%s)\nTempos do build:\n  Preparação: %ss\n  Rootfs: %ss (geração %ss, validação %ss)\n  Homefs: %ss (geração %ss, validação %ss)\n  Metadata: %ss\n  Total: %ss\nLog: %s\n' \
         "${ROOTFS_FILE}" "${rootfs_size}" "${HOMEFS_FILE}" "${homefs_size}" \
-        "${elapsed}" "${LOG_FILE}"
+        "${preparation_seconds}" "$(( ROOTFS_GENERATE_SECONDS + ROOTFS_VALIDATE_SECONDS ))" \
+        "${ROOTFS_GENERATE_SECONDS}" "${ROOTFS_VALIDATE_SECONDS}" \
+        "$(( HOMEFS_GENERATE_SECONDS + HOMEFS_VALIDATE_SECONDS ))" \
+        "${HOMEFS_GENERATE_SECONDS}" "${HOMEFS_VALIDATE_SECONDS}" \
+        "${metadata_seconds}" "${elapsed}" "${LOG_FILE}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
