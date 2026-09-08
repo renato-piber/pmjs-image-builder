@@ -23,14 +23,21 @@ completa testa os dois fluxos Zstandard, lista os dois tars, verifica
 ```text
 origem montada/auto-detectada
           |
+          +--> staging local pequeno
+          |    - overlay de generalização
+          |    - home filtrada (limitada por HOMEFS_MAX_SIZE_MIB)
+          |
           v
-OUTPUT_DIR/.pmjs-linux-<versão>.build.*   (filesystem Linux local)
-          |  gera rootfs + homefs + metadados
+DESTINO/.pmjs-linux-<versão>.build.*      (OUTPUT_DIR local ou NFS)
+          |  SOURCE_ROOT -> tar -> zstd -> rootfs.tar.zst.partial
+          |  home staging -> tar -> zstd -> homefs.tar.zst.partial
+          |  renomeia cada archive dentro do staging
+          |  gera metadados
           |  valida archives + SHA256SUMS + manifest + diretório
           v
-OUTPUT_DIR/pmjs-linux-<versão>            (rename local)
+DESTINO/pmjs-linux-<versão>               (rename no mesmo filesystem)
           |
-          | publish-image.sh com paths explícitos
+          | publish-image.sh opcional para destinos adicionais/Ventoy
           v
 destino/.pmjs-linux-<versão>.partial.*    (cópia no filesystem do destino)
           |  repete toda a validação e sincroniza
@@ -38,10 +45,22 @@ destino/.pmjs-linux-<versão>.partial.*    (cópia no filesystem do destino)
 destino/pmjs-linux-<versão>               (rename atômico por destino)
 ```
 
-O build nunca escreve archives diretamente no Ventoy ou no NFS. Isso evita
-perder semântica POSIX durante a criação e impede que consumidores observem uma
-imagem incompleta. `OUTPUT_DIR` inteiro é excluído do rootfs, inclusive builds
-locais anteriores.
+O build nunca escreve diretamente no Ventoy/exFAT. Para NFS, os archives podem
+ser produzidos diretamente no staging oculto porque tar é um formato de fluxo:
+UID/GID, modos, ACLs, xattrs e symlinks são serializados pelo GNU tar a partir da
+origem, independentemente do filesystem que armazena o arquivo `.tar.zst`. O NFS
+armazena somente o fluxo comprimido e os metadados do contrato.
+
+O nome final permanece ausente durante toda a geração. A validação relê os bytes
+no NFS e o commit usa rename no mesmo filesystem. Se o processo cair, pode restar
+no máximo um diretório oculto `.build.*`; consumidores que procuram
+`pmjs-linux-*` não o tratam como imagem. `OUTPUT_DIR` inteiro é excluído do
+rootfs, inclusive builds anteriores.
+
+O staging da home continua local porque a whitelist é materializada com
+`rsync -aAX --numeric-ids` antes de gerar o archive. O overlay de generalização
+também continua local, mas contém apenas o drop-in de regeneração das host keys.
+Logs e diretórios temporários de detecção/mount permanecem locais e pequenos.
 
 ## Política de publicação
 
@@ -67,6 +86,6 @@ de execução anterior. Além disso, `OUTPUT_DIR` podia apontar diretamente para
 Ventoy/NFS e não havia uma operação de publicação nem revalidação da cópia.
 
 A implementação atual elimina esses estados intermediários por staging de
-diretório, validação do conjunto e publicação imutável. O PMJS Deploy deste
-workspace continua limitado a gzip e precisa ser migrado separadamente; nenhum
-arquivo dele ou do PMJS Live Builder foi alterado.
+diretório, validação do conjunto e publicação imutável. O modo NFS reutiliza a
+mesma transação, sem cópia local dos archives. Nenhum arquivo do PMJS Deploy ou
+do PMJS Live Builder foi alterado.

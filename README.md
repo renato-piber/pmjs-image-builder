@@ -50,19 +50,39 @@ permitidas são copiadas; caches, navegadores, lixeira, históricos e arquivos
 pessoais ficam fora da imagem. Os diretórios XDG padrão são incluídos vazios.
 Como exceção explícita, arquivos regulares `*.desktop` diretamente no Desktop
 detectado são preservados; nenhum outro conteúdo desse diretório é copiado.
-O staging do homefs é criado em `/var/tmp` (com fallback para `/tmp`), separado
-do `OUTPUT_DIR`, para preservar ownership, ACLs e xattrs.
+O staging filtrado do homefs permanece em filesystem Linux local, separado do
+destino dos archives, para preservar ownership, ACLs e xattrs. O local é
+configurado por `LOCAL_TEMP_DIR` e seu tamanho máximo continua limitado por
+`HOMEFS_MAX_SIZE_MIB`.
 
-## Build local e publicação
+## Build local ou direto no NFS
 
-`OUTPUT_DIR` é exclusivamente o staging Linux local. O build ocorre primeiro em
-um diretório oculto `.pmjs-linux-<versão>.build.*`; depois de validar os archives,
-o SHA256, o manifest e o conjunto completo, esse diretório é renomeado para
-`pmjs-linux-<versão>/`. Uma versão existente nunca é substituída.
+Sem argumentos, `OUTPUT_DIR` continua sendo o staging Linux local. O build ocorre
+primeiro em um diretório oculto `.pmjs-linux-<versão>.build.*`; depois de validar
+os archives, SHA256, manifest e o conjunto completo, esse diretório é renomeado
+para `pmjs-linux-<versão>/`. Uma versão existente nunca é substituída.
 
 ```bash
 sudo ./build-image.sh
 ```
+
+Na PMJS Live, o destino NFS pode ser informado explicitamente. O diretório deve
+existir dentro de um NFS já montado:
+
+```bash
+sudo mkdir -p /mnt/pmjs-images
+sudo mount -t nfs 192.168.0.19:/var/clone-pmjs /mnt/pmjs-images
+sudo ./build-image.sh --nfs-dir /mnt/pmjs-images
+```
+
+Também é possível definir `NFS_IMAGES_DIR` em `config/image.conf`. Não há servidor
+ou mountpoint implícito no código.
+
+Nesse modo, GNU tar lê `SOURCE_ROOT` ou o staging filtrado da home e envia o fluxo
+comprimido pelo Zstandard diretamente para arquivos `.partial` no workspace NFS.
+Os archives completos não passam por `/var/tmp`. A validação é feita sobre os
+bytes gravados no NFS e o diretório final só aparece após um rename no mesmo
+filesystem.
 
 A publicação é uma operação posterior e explícita. Informe sempre a imagem já
 concluída e um ou ambos os destinos:
@@ -101,8 +121,11 @@ A atomicidade é por destino; não existe transação atômica entre Ventoy e NF
 - rsync com suporte a ACLs e atributos estendidos
 - Python 3 (serialização e validação robusta do manifest JSON)
 - sha256sum
-- `OUTPUT_DIR` em filesystem Linux local (não NFS, SMB, FUSE, FAT/exFAT ou NTFS)
-- ao menos `MIN_FREE_SPACE_GIB` livres no staging local
+- `OUTPUT_DIR` em filesystem Linux local, ou `--nfs-dir`/`NFS_IMAGES_DIR` em NFS
+  montado;
+- ao menos `MIN_FREE_SPACE_GIB` livres no destino dos archives;
+- em `LOCAL_TEMP_DIR`, apenas a estimativa do conteúdo selecionado da home mais
+  `LOCAL_TEMP_RESERVE_MIB`; `HOMEFS_MAX_SIZE_MIB` continua sendo o teto.
 
 Edite `config/image.conf` conforme necessário. `OUTPUT_DIR` e `LOG_DIR`
 relativos são resolvidos a partir da raiz do projeto; `SOURCE_ROOT` deve ser
@@ -182,16 +205,14 @@ Os testes não capturam o sistema real e usam árvores temporárias sintéticas:
 ```
 
 Eles cobrem gzip interno, formato Zstandard publicado, integridade cruzada do
-manifest e SHA256SUMS, rejeição de corrupção, staging local e publicação
-atômica/imutável.
+manifest e SHA256SUMS, rejeição de corrupção, staging local, build NFS simulado,
+falhas por fase, preservação de metadados e publicação atômica/imutável.
 
-## Limite atual de integração
+## Integração com o Deploy
 
-O PMJS Deploy presente neste workspace ainda procura e extrai exclusivamente
-`rootfs.tar.gz` e `homefs.tar.gz`. Por restrição deste trabalho ele não foi
-alterado; portanto, embora as imagens possam ser publicadas nos diretórios que
-ele enumera, esse Deploy ainda não consome o novo formato Zstandard/schema 1.
-Essa migração deve ocorrer no próprio projeto Deploy antes do uso em produção.
+O PMJS Deploy deste workspace reconhece o formato Zstandard/schema 1 e mantém o
+fallback gzip legado. O diretório final publicado pelo Builder segue a identidade
+`<image_name>-<image_version>` esperada no discovery.
 
 > A captura ocorre sobre um sistema ativo. Para consistência forte, execute em
 > um snapshot ou ambiente sem escritas concorrentes.

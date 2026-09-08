@@ -78,6 +78,35 @@ detect_home_standard_directories() {
     done
 }
 
+estimate_homefs_staging_size_mib() {
+    local home_source=$1
+    local -n estimate_ref=$2
+    local relative source_path desktop_directory desktop_path item_bytes
+    local total_bytes=0
+    local -a standard_directories=()
+
+    detect_home_standard_directories "${home_source}" standard_directories || return 1
+    for relative in "${HOMEFS_WHITELIST[@]}"; do
+        source_path="${home_source}/${relative}"
+        [[ -e "${source_path}" || -L "${source_path}" ]] || continue
+        item_bytes="$(du -sb -- "${source_path}" | awk '{print $1}')" || return 1
+        total_bytes=$(( total_bytes + item_bytes ))
+    done
+
+    desktop_directory=${standard_directories[0]}
+    source_path="${home_source}/${desktop_directory}"
+    if [[ -d "${source_path}" && ! -L "${source_path}" ]]; then
+        while IFS= read -r -d '' desktop_path; do
+            [[ -f "${desktop_path}" && ! -L "${desktop_path}" ]] || continue
+            item_bytes="$(stat -c '%s' -- "${desktop_path}")" || return 1
+            total_bytes=$(( total_bytes + item_bytes ))
+        done < <(find -P "${source_path}" -mindepth 1 -maxdepth 1 \
+            -name '*.desktop' -print0)
+    fi
+
+    estimate_ref=$(( (total_bytes + 1024 * 1024 - 1) / (1024 * 1024) ))
+}
+
 validate_homefs_source_symlinks() {
     local home_source=$1
     local approved_path=$2
@@ -102,8 +131,19 @@ prepare_homefs_staging() {
     local -n standard_directories_ref=$5
     local -n staging_ref=$6
     local relative source_path directory desktop_directory desktop_path
+    local staging_parent=${7:-}
 
-    if [[ -d /var/tmp && -w /var/tmp ]] &&
+    if [[ -n "${staging_parent}" ]]; then
+        [[ -d "${staging_parent}" && ! -L "${staging_parent}" && -w "${staging_parent}" ]] || {
+            ui_error "Diretório local de staging do homefs inválido: ${staging_parent}"
+            return 1
+        }
+        staging_ref="$(mktemp --directory --tmpdir="${staging_parent}" \
+            'pmjs-homefs-staging.XXXXXX')" || {
+            ui_error "Não foi possível criar staging do homefs em ${staging_parent}"
+            return 1
+        }
+    elif [[ -d /var/tmp && -w /var/tmp ]] &&
        staging_ref="$(mktemp --directory --tmpdir=/var/tmp 'pmjs-homefs-staging.XXXXXX' 2>/dev/null)"; then
         :
     elif [[ -d /tmp && -w /tmp ]] &&
@@ -300,11 +340,15 @@ validate_homefs_archive() {
 }
 
 cleanup_homefs_staging() {
-    local staging_dir=$1 resolved_staging staging_parent
+    local staging_dir=$1 expected_parent=${2:-} resolved_staging staging_parent
     [[ -n "${staging_dir}" && -e "${staging_dir}" ]] || return 0
     resolved_staging="$(realpath -m -- "${staging_dir}")"
     staging_parent="$(dirname -- "${resolved_staging}")"
-    [[ ( "${staging_parent}" == /var/tmp || "${staging_parent}" == /tmp ) &&
+    if [[ -n "${expected_parent}" ]]; then
+        expected_parent="$(realpath -m -- "${expected_parent}")"
+    fi
+    [[ ( ( -n "${expected_parent}" && "${staging_parent}" == "${expected_parent}" ) ||
+         ( -z "${expected_parent}" && ( "${staging_parent}" == /var/tmp || "${staging_parent}" == /tmp ) ) ) &&
        "$(basename -- "${resolved_staging}")" == pmjs-homefs-staging.* &&
        ! -L "${resolved_staging}" && -d "${resolved_staging}" ]] || {
         ui_error "Recusa ao limpar staging inesperado do homefs: ${staging_dir}"

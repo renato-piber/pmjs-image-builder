@@ -35,6 +35,10 @@ GENERALIZATION_BUILD_DIR=""
 BUILD_DIR=""
 BUILD_WORKSPACE=""
 LOCAL_IMAGE_DIR=""
+BUILD_NFS_DIR=""
+BUILD_DESTINATION_KIND="local"
+LOCAL_TEMP_DIR_RESOLVED=""
+HOMEFS_STAGING_PARENT=""
 ROOTFS_GENERATE_SECONDS=0
 ROOTFS_VALIDATE_SECONDS=0
 HOMEFS_GENERATE_SECONDS=0
@@ -53,8 +57,10 @@ cleanup() {
         GENERALIZATION_BUILD_DIR=""
     fi
     if [[ -n "${HOMEFS_STAGING:-}" ]]; then
-        cleanup_homefs_staging "${HOMEFS_STAGING}" || exit_code=1
+        cleanup_homefs_staging "${HOMEFS_STAGING}" \
+            "${HOMEFS_STAGING_PARENT:-}" || exit_code=1
         HOMEFS_STAGING=""
+        HOMEFS_STAGING_PARENT=""
     fi
     if [[ -n "${HOMEFS_TEMP_FILE:-}" && -e "${HOMEFS_TEMP_FILE}" ]]; then
         rm -f -- "${HOMEFS_TEMP_FILE}"
@@ -106,29 +112,67 @@ trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
 
+usage() {
+    cat <<'EOF'
+Uso:
+  sudo ./build-image.sh [--nfs-dir DIRETÓRIO]
+
+Sem argumentos, o build usa OUTPUT_DIR local de config/image.conf.
+Com --nfs-dir, os archives são gerados diretamente em um staging oculto no
+filesystem NFS informado e a imagem só aparece após validação e rename final.
+O diretório deve existir, estar montado e ser gravável.
+EOF
+}
+
+parse_build_arguments() {
+    while (( $# > 0 )); do
+        case "$1" in
+            --nfs-dir)
+                (( $# >= 2 )) || { ui_error "Valor ausente para --nfs-dir"; return 1; }
+                [[ -z "${BUILD_NFS_DIR}" ]] || {
+                    ui_error "--nfs-dir foi informado mais de uma vez"
+                    return 1
+                }
+                BUILD_NFS_DIR=$2
+                shift 2
+                ;;
+            --help|-h)
+                usage
+                return 2
+                ;;
+            *)
+                ui_error "Argumento desconhecido: $1"
+                return 1
+                ;;
+        esac
+    done
+}
+
 build_rootfs_artifact() {
     local source_root=$1
     local build_dir=$2
     local rootfs_file=$3 compression=${4:-gzip} zstd_level=${5:-3}
-    local phase_start
+    local local_staging_parent=${6:-$build_dir} phase_start
 
-    validate_generalization_source "${source_root}"
-    GENERALIZATION_BUILD_DIR="${build_dir}"
-    prepare_generalization_staging "${build_dir}" GENERALIZATION_STAGING
+    validate_generalization_source "${source_root}" || return 1
+    GENERALIZATION_BUILD_DIR="${local_staging_parent}"
+    prepare_generalization_staging "${local_staging_parent}" GENERALIZATION_STAGING || return 1
     log_write INFO "Staging de generalização: ${GENERALIZATION_STAGING}"
 
     ROOTFS_TEMP_FILE="${rootfs_file}.partial"
     phase_start=${SECONDS}
     generate_rootfs "${source_root}" "${build_dir}" "${ROOTFS_TEMP_FILE}" \
-        "${GENERALIZATION_STAGING}" "${compression}" "${zstd_level}"
+        "${GENERALIZATION_STAGING}" "${compression}" "${zstd_level}" || return 1
     ROOTFS_GENERATE_SECONDS=$(( SECONDS - phase_start ))
     phase_start=${SECONDS}
-    validate_rootfs "${ROOTFS_TEMP_FILE}" "${source_root}" "${build_dir}" "${compression}"
+    validate_rootfs "${ROOTFS_TEMP_FILE}" "${source_root}" "${build_dir}" \
+        "${compression}" || return 1
     ROOTFS_VALIDATE_SECONDS=$(( SECONDS - phase_start ))
-    mv -f -- "${ROOTFS_TEMP_FILE}" "${rootfs_file}"
+    mv -f -- "${ROOTFS_TEMP_FILE}" "${rootfs_file}" || return 1
     ROOTFS_TEMP_FILE=""
 
-    cleanup_generalization_staging "${GENERALIZATION_STAGING}" "${build_dir}"
+    cleanup_generalization_staging "${GENERALIZATION_STAGING}" \
+        "${local_staging_parent}" || return 1
     GENERALIZATION_STAGING=""
     GENERALIZATION_BUILD_DIR=""
 }
@@ -136,31 +180,35 @@ build_rootfs_artifact() {
 build_homefs_artifact() {
     local home_source=$1 home_user=$2 home_uid=$3 home_gid=$4
     local max_size_mib=$5 build_dir=$6 homefs_file=$7
-    local compression=${8:-gzip} zstd_level=${9:-3} phase_start
+    local compression=${8:-gzip} zstd_level=${9:-3} local_staging_parent=${10:-}
+    local phase_start
     local -a standard_directories
 
-    detect_home_standard_directories "${home_source}" standard_directories
+    detect_home_standard_directories "${home_source}" standard_directories || return 1
     prepare_homefs_staging "${home_source}" "${home_user}" "${home_uid}" "${home_gid}" \
-        standard_directories HOMEFS_STAGING
+        standard_directories HOMEFS_STAGING "${local_staging_parent}" || return 1
+    HOMEFS_STAGING_PARENT="$(dirname -- "${HOMEFS_STAGING}")"
     log_write INFO "Staging do homefs: ${HOMEFS_STAGING}"
     log_write INFO "Filesystem do staging do homefs: $(stat --file-system --format='%T' -- "${HOMEFS_STAGING}")"
     log_write INFO "Archive final do homefs: ${homefs_file}"
     validate_homefs_staging "${HOMEFS_STAGING}" "${home_user}" "${home_uid}" "${home_gid}" \
-        "${max_size_mib}" "${standard_directories[@]}"
+        "${max_size_mib}" "${standard_directories[@]}" || return 1
 
     HOMEFS_TEMP_FILE="${homefs_file}.partial"
     phase_start=${SECONDS}
     generate_homefs "${HOMEFS_STAGING}" "${home_user}" "${HOMEFS_TEMP_FILE}" \
-        "${compression}" "${zstd_level}"
+        "${compression}" "${zstd_level}" || return 1
     HOMEFS_GENERATE_SECONDS=$(( SECONDS - phase_start ))
     phase_start=${SECONDS}
-    validate_homefs_archive "${HOMEFS_TEMP_FILE}" "${home_user}" "${standard_directories[@]}"
+    validate_homefs_archive "${HOMEFS_TEMP_FILE}" "${home_user}" \
+        "${standard_directories[@]}" || return 1
     HOMEFS_VALIDATE_SECONDS=$(( SECONDS - phase_start ))
-    mv -f -- "${HOMEFS_TEMP_FILE}" "${homefs_file}"
+    mv -f -- "${HOMEFS_TEMP_FILE}" "${homefs_file}" || return 1
     HOMEFS_TEMP_FILE=""
 
-    cleanup_homefs_staging "${HOMEFS_STAGING}"
+    cleanup_homefs_staging "${HOMEFS_STAGING}" "${HOMEFS_STAGING_PARENT}" || return 1
     HOMEFS_STAGING=""
+    HOMEFS_STAGING_PARENT=""
 }
 
 build_metadata_artifacts() {
@@ -169,14 +217,17 @@ build_metadata_artifacts() {
 
     CHECKSUM_TEMP_FILE="${checksum_file}.partial"
     MANIFEST_TEMP_FILE="${manifest_file}.partial"
-    generate_checksums "${build_dir}" "${rootfs_file}" "${homefs_file}" "${CHECKSUM_TEMP_FILE}"
-    validate_checksums "${build_dir}" "${CHECKSUM_TEMP_FILE}"
+    generate_checksums "${build_dir}" "${rootfs_file}" "${homefs_file}" \
+        "${CHECKSUM_TEMP_FILE}" || return 1
+    validate_checksums "${build_dir}" "${CHECKSUM_TEMP_FILE}" || return 1
     generate_manifest "${MANIFEST_TEMP_FILE}" "${image_name}" "${image_version}" \
-        "${builder_version}" "${compression}" "${rootfs_file}" "${homefs_file}" "${source_root}"
-    validate_manifest "${MANIFEST_TEMP_FILE}" "${rootfs_file}" "${homefs_file}" "${compression}"
-    mv -f -- "${CHECKSUM_TEMP_FILE}" "${checksum_file}"
+        "${builder_version}" "${compression}" "${rootfs_file}" "${homefs_file}" \
+        "${source_root}" || return 1
+    validate_manifest "${MANIFEST_TEMP_FILE}" "${rootfs_file}" "${homefs_file}" \
+        "${compression}" || return 1
+    mv -f -- "${CHECKSUM_TEMP_FILE}" "${checksum_file}" || return 1
     CHECKSUM_TEMP_FILE=""
-    mv -f -- "${MANIFEST_TEMP_FILE}" "${manifest_file}"
+    mv -f -- "${MANIFEST_TEMP_FILE}" "${manifest_file}" || return 1
     MANIFEST_TEMP_FILE=""
 }
 
@@ -185,9 +236,17 @@ main() {
     local version_file="${PROJECT_DIR}/VERSION"
     local elapsed rootfs_size homefs_size home_uid home_gid resolved_source_root
     local extension preparation_seconds metadata_seconds metadata_start builder_version
-    local image_directory_name
+    local image_directory_name local_required_mib home_staging_estimate_mib parse_status=0
 
     ui_header
+
+    if parse_build_arguments "$@"; then
+        :
+    else
+        parse_status=$?
+        [[ ${parse_status} -eq 2 ]] && return 0
+        return "${parse_status}"
+    fi
 
     check_root
     check_dependencies
@@ -195,6 +254,9 @@ main() {
     # shellcheck source=config/image.conf
     source "${config_file}"
     validate_config
+    if [[ -z "${BUILD_NFS_DIR}" && -n "${NFS_IMAGES_DIR:-}" ]]; then
+        BUILD_NFS_DIR=${NFS_IMAGES_DIR}
+    fi
     check_compression_dependency "${IMAGE_COMPRESSION}"
     validate_version_file "${version_file}" "${IMAGE_VERSION}"
     builder_version="$(tr -d '[:space:]' < "${version_file}")"
@@ -202,9 +264,15 @@ main() {
     ROOTFS_FILENAME="rootfs.${extension}"
     HOMEFS_FILENAME="homefs.${extension}"
 
-    OUTPUT_DIR="$(resolve_project_path "${PROJECT_DIR}" "${OUTPUT_DIR}")"
     LOG_DIR="$(resolve_project_path "${PROJECT_DIR}" "${LOG_DIR}")"
-    readonly OUTPUT_DIR LOG_DIR
+    LOCAL_TEMP_DIR="${LOCAL_TEMP_DIR:-/var/tmp/pmjs-image-builder/staging}"
+    LOCAL_TEMP_DIR="$(resolve_project_path "${PROJECT_DIR}" "${LOCAL_TEMP_DIR}")"
+
+    mkdir -p -- "${LOG_DIR}"
+    [[ -d "${LOG_DIR}" && -w "${LOG_DIR}" ]] || {
+        ui_error "Diretório de logs não gravável: ${LOG_DIR}"
+        return 1
+    }
 
     init_log "${LOG_DIR}"
     log_write INFO "Iniciando build ${IMAGE_NAME}-${IMAGE_VERSION}"
@@ -227,11 +295,36 @@ main() {
     log_write INFO "Raiz efetiva da captura: ${SOURCE_ROOT}"
     check_source_root "${SOURCE_ROOT}"
     validate_detected_capture_source "${SOURCE_ROOT}"
-    prepare_directories "${OUTPUT_DIR}" "${LOG_DIR}"
-
     image_directory_name="${IMAGE_NAME}-${IMAGE_VERSION}"
-    check_local_staging_filesystem "${OUTPUT_DIR}"
-    check_free_space "${OUTPUT_DIR}" "${MIN_FREE_SPACE_GIB}"
+    if [[ -n "${BUILD_NFS_DIR}" ]]; then
+        [[ "${BUILD_NFS_DIR}" == /* ]] || {
+            ui_error "O destino NFS deve ser um caminho absoluto: ${BUILD_NFS_DIR}"
+            return 1
+        }
+        OUTPUT_DIR="$(realpath -e -- "${BUILD_NFS_DIR}")" || {
+            ui_error "Diretório NFS inexistente: ${BUILD_NFS_DIR}"
+            return 1
+        }
+        BUILD_DESTINATION_KIND=nfs
+        check_nfs_staging_filesystem "${OUTPUT_DIR}"
+        check_free_space "${OUTPUT_DIR}" "${MIN_FREE_SPACE_GIB}"
+    else
+        OUTPUT_DIR="$(resolve_project_path "${PROJECT_DIR}" "${OUTPUT_DIR}")"
+        prepare_directories "${OUTPUT_DIR}" "${LOG_DIR}"
+        check_local_staging_filesystem "${OUTPUT_DIR}"
+        check_free_space "${OUTPUT_DIR}" "${MIN_FREE_SPACE_GIB}"
+    fi
+
+    prepare_local_temporary_directory "${LOCAL_TEMP_DIR}" LOCAL_TEMP_DIR_RESOLVED
+    estimate_homefs_staging_size_mib "${HOME_SOURCE}" home_staging_estimate_mib
+    (( home_staging_estimate_mib <= HOMEFS_MAX_SIZE_MIB )) || {
+        ui_error "Conteúdo selecionado da home excede HOMEFS_MAX_SIZE_MIB: ${home_staging_estimate_mib} MiB"
+        return 1
+    }
+    local_required_mib=$(( home_staging_estimate_mib + ${LOCAL_TEMP_RESERVE_MIB:-64} ))
+    check_free_space_mib "${LOCAL_TEMP_DIR_RESOLVED}" "${local_required_mib}"
+    readonly OUTPUT_DIR LOG_DIR LOCAL_TEMP_DIR_RESOLVED
+
     prepare_build_workspace "${OUTPUT_DIR}" "${image_directory_name}" \
         BUILD_WORKSPACE LOCAL_IMAGE_DIR
     BUILD_DIR="${BUILD_WORKSPACE}"
@@ -241,7 +334,9 @@ main() {
     readonly MANIFEST_FILE="${BUILD_DIR}/manifest.json"
 
     log_write INFO "Staging do build: ${BUILD_DIR}"
-    log_write INFO "Imagem local final: ${LOCAL_IMAGE_DIR}"
+    log_write INFO "Destino do build: ${BUILD_DESTINATION_KIND}"
+    log_write INFO "Imagem final após commit: ${LOCAL_IMAGE_DIR}"
+    log_write INFO "Temporários locais: ${LOCAL_TEMP_DIR_RESOLVED} (${local_required_mib} MiB mínimos)"
     ui_info "Gerando ${ROOTFS_FILE}"
     log_write INFO "A captura é feita com o sistema ativo e pode refletir alterações concorrentes."
     log_write INFO "Identidades da máquina-modelo serão removidas do rootfs."
@@ -253,13 +348,13 @@ main() {
     preparation_seconds=$(( SECONDS - START_TIME ))
 
     build_rootfs_artifact "${SOURCE_ROOT}" "${OUTPUT_DIR}" "${ROOTFS_FILE}" \
-        "${IMAGE_COMPRESSION}" "${ZSTD_LEVEL}"
+        "${IMAGE_COMPRESSION}" "${ZSTD_LEVEL}" "${LOCAL_TEMP_DIR_RESOLVED}"
 
     detect_home_identity "${HOME_SOURCE}" "${HOME_USER}" home_uid home_gid
     ui_info "Gerando ${HOMEFS_FILE}"
     build_homefs_artifact "${HOME_SOURCE}" "${HOME_USER}" "${home_uid}" "${home_gid}" \
         "${HOMEFS_MAX_SIZE_MIB}" "${BUILD_DIR}" "${HOMEFS_FILE}" \
-        "${IMAGE_COMPRESSION}" "${ZSTD_LEVEL}"
+        "${IMAGE_COMPRESSION}" "${ZSTD_LEVEL}" "${LOCAL_TEMP_DIR_RESOLVED}"
 
     metadata_start=${SECONDS}
     build_metadata_artifacts "${BUILD_DIR}" "${ROOTFS_FILE}" "${HOMEFS_FILE}" \
@@ -278,7 +373,7 @@ main() {
     elapsed="$(( SECONDS - START_TIME ))"
     BUILD_SUCCEEDED=true
 
-    log_write SUCCESS "Imagem local publicada após validação completa: ${LOCAL_IMAGE_DIR}"
+    log_write SUCCESS "Imagem ${BUILD_DESTINATION_KIND} publicada após validação completa: ${LOCAL_IMAGE_DIR}"
     log_write INFO "Tamanho rootfs: ${rootfs_size}; tamanho homefs: ${homefs_size}"
     log_write INFO "Tempos: preparação=${preparation_seconds}s; rootfs_geração=${ROOTFS_GENERATE_SECONDS}s; rootfs_validação=${ROOTFS_VALIDATE_SECONDS}s; homefs_geração=${HOMEFS_GENERATE_SECONDS}s; homefs_validação=${HOMEFS_VALIDATE_SECONDS}s; metadata=${metadata_seconds}s; total=${elapsed}s"
     ui_success "Build concluído"

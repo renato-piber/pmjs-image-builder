@@ -17,6 +17,7 @@ validate_config() {
     [[ "${HOMEFS_FILENAME}" == auto ]] || { ui_error "HOMEFS_FILENAME deve ser 'auto'."; return 1; }
     [[ "${MIN_FREE_SPACE_GIB}" =~ ^[0-9]+$ ]] || { ui_error "MIN_FREE_SPACE_GIB deve ser um inteiro não negativo."; return 1; }
     [[ "${HOMEFS_MAX_SIZE_MIB}" =~ ^[1-9][0-9]*$ ]] || { ui_error "HOMEFS_MAX_SIZE_MIB deve ser um inteiro positivo."; return 1; }
+    [[ "${LOCAL_TEMP_RESERVE_MIB:-64}" =~ ^[0-9]+$ ]] || { ui_error "LOCAL_TEMP_RESERVE_MIB deve ser um inteiro não negativo."; return 1; }
     [[ "${HOME_USER}" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || { ui_error "HOME_USER contém caracteres inválidos."; return 1; }
     if [[ "${SOURCE_ROOT}" == auto || "${HOME_SOURCE}" == auto ]]; then
         [[ "${SOURCE_ROOT}" == auto && "${HOME_SOURCE}" == auto ]] || { ui_error "SOURCE_ROOT e HOME_SOURCE devem usar 'auto' juntos."; return 1; }
@@ -139,13 +140,59 @@ check_local_staging_filesystem() {
     filesystem="$(stat --file-system --format='%T' -- "${staging_dir}")"
     case "${filesystem}" in
         nfs|nfs4|cifs|smb3|9p|fuse*|exfat|vfat|msdos|ntfs)
-            ui_error "OUTPUT_DIR deve estar em filesystem Linux local; detectado ${filesystem}: ${staging_dir}"
+            ui_error "O staging local deve usar filesystem Linux; detectado ${filesystem}: ${staging_dir}"
             return 1
             ;;
     esac
     if declare -F log_write >/dev/null; then
         log_write INFO "Staging local validado: ${staging_dir} (${filesystem})"
     fi
+}
+
+check_nfs_staging_filesystem() {
+    local staging_dir=$1 filesystem mount_target
+
+    [[ "${staging_dir}" == /* ]] || {
+        ui_error "NFS_IMAGES_DIR deve ser um caminho absoluto: ${staging_dir}"
+        return 1
+    }
+    [[ -d "${staging_dir}" && ! -L "${staging_dir}" && -w "${staging_dir}" ]] || {
+        ui_error "NFS_IMAGES_DIR deve ser um diretório real e gravável: ${staging_dir}"
+        return 1
+    }
+    filesystem="$(findmnt --noheadings --output FSTYPE --target "${staging_dir}" | awk 'NR == 1 { print $1 }')"
+    mount_target="$(findmnt --noheadings --output TARGET --target "${staging_dir}" | awk 'NR == 1 { print $1 }')"
+    [[ "${filesystem}" == nfs || "${filesystem}" == nfs4 ]] || {
+        ui_error "NFS_IMAGES_DIR não está em um filesystem NFS montado: ${staging_dir} (${filesystem:-desconhecido})"
+        return 1
+    }
+    [[ -n "${mount_target}" ]] || {
+        ui_error "Não foi possível identificar o mountpoint NFS de ${staging_dir}"
+        return 1
+    }
+    if declare -F log_write >/dev/null; then
+        log_write INFO "Staging NFS validado: ${staging_dir} (${filesystem}, mount ${mount_target})"
+    fi
+}
+
+prepare_local_temporary_directory() {
+    local configured_dir=$1
+    local -n resolved_ref=$2
+
+    [[ "${configured_dir}" == /* ]] || {
+        ui_error "LOCAL_TEMP_DIR deve ser um caminho absoluto: ${configured_dir}"
+        return 1
+    }
+    mkdir -p -- "${configured_dir}"
+    resolved_ref="$(realpath -e -- "${configured_dir}")" || {
+        ui_error "Não foi possível resolver LOCAL_TEMP_DIR: ${configured_dir}"
+        return 1
+    }
+    [[ -d "${resolved_ref}" && ! -L "${configured_dir}" && -w "${resolved_ref}" ]] || {
+        ui_error "LOCAL_TEMP_DIR deve ser um diretório local real e gravável: ${configured_dir}"
+        return 1
+    }
+    check_local_staging_filesystem "${resolved_ref}"
 }
 
 prepare_build_workspace() {
@@ -203,4 +250,16 @@ check_free_space() {
     minimum_bytes=$(( minimum_gib * 1024 * 1024 * 1024 ))
     (( available_bytes >= minimum_bytes )) || { ui_error "Espaço insuficiente em ${destination}: mínimo de ${minimum_gib} GiB."; return 1; }
     log_write INFO "Espaço livre validado: ${available_bytes} bytes disponíveis"
+}
+
+check_free_space_mib() {
+    local destination=$1 minimum_mib=$2 available_bytes minimum_bytes
+
+    available_bytes="$(df --output=avail -B1 -- "${destination}" | tail -n 1 | tr -d '[:space:]')"
+    minimum_bytes=$(( minimum_mib * 1024 * 1024 ))
+    (( available_bytes >= minimum_bytes )) || {
+        ui_error "Espaço local insuficiente em ${destination}: mínimo de ${minimum_mib} MiB para temporários."
+        return 1
+    }
+    log_write INFO "Espaço local para temporários validado: ${available_bytes} bytes disponíveis; mínimo ${minimum_mib} MiB"
 }
