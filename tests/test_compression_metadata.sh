@@ -41,6 +41,12 @@ for compression in gzip zstd; do
     validate_homefs_archive "${home_archive}" usuario \
         Desktop Documentos Downloads Imagens Música Vídeos Público Modelos
     [[ -s "${root_archive}" && -s "${home_archive}" ]]
+    if [[ "${compression}" == gzip ]]; then
+        gzip_checksums="${build_dir}/SHA256SUMS.gzip"
+        generate_checksums "${build_dir}" "${root_archive}" "${home_archive}" \
+            "${gzip_checksums}"
+        validate_checksums "${build_dir}" "${gzip_checksums}"
+    fi
 done
 
 IMAGE_COMPRESSION=zstd
@@ -70,6 +76,16 @@ fi
     }
     if check_compression_dependency zstd; then
         printf 'Ausência de zstd foi aceita\n' >&2
+        exit 1
+    fi
+)
+
+(
+    # O suporte gzip permanece nos helpers, mas não no formato publicável.
+    source "${TEST_PROJECT_DIR}/config/image.conf"
+    IMAGE_COMPRESSION=gzip
+    if validate_config; then
+        printf 'Configuração publicável aceitou gzip\n' >&2
         exit 1
     fi
 )

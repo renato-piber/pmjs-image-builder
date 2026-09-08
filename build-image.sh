@@ -33,6 +33,8 @@ HOMEFS_STAGING=""
 GENERALIZATION_STAGING=""
 GENERALIZATION_BUILD_DIR=""
 BUILD_DIR=""
+BUILD_WORKSPACE=""
+LOCAL_IMAGE_DIR=""
 ROOTFS_GENERATE_SECONDS=0
 ROOTFS_VALIDATE_SECONDS=0
 HOMEFS_GENERATE_SECONDS=0
@@ -67,6 +69,10 @@ cleanup() {
     fi
     if [[ -n "${MANIFEST_TEMP_FILE:-}" && -e "${MANIFEST_TEMP_FILE}" ]]; then
         rm -f -- "${MANIFEST_TEMP_FILE}"
+    fi
+    if [[ -n "${BUILD_WORKSPACE:-}" ]]; then
+        cleanup_build_workspace "${BUILD_WORKSPACE}" "${OUTPUT_DIR:-}" || exit_code=1
+        BUILD_WORKSPACE=""
     fi
     if [[ -n "${SOURCE_DETECT_DIR:-}" ]]; then
         cleanup_detected_capture_source || exit_code=1
@@ -179,6 +185,7 @@ main() {
     local version_file="${PROJECT_DIR}/VERSION"
     local elapsed rootfs_size homefs_size home_uid home_gid resolved_source_root
     local extension preparation_seconds metadata_seconds metadata_start builder_version
+    local image_directory_name
 
     ui_header
 
@@ -222,18 +229,19 @@ main() {
     validate_detected_capture_source "${SOURCE_ROOT}"
     prepare_directories "${OUTPUT_DIR}" "${LOG_DIR}"
 
-    BUILD_DIR="${OUTPUT_DIR}/${IMAGE_NAME}-${IMAGE_VERSION}"
-    readonly BUILD_DIR
+    image_directory_name="${IMAGE_NAME}-${IMAGE_VERSION}"
+    check_local_staging_filesystem "${OUTPUT_DIR}"
+    check_free_space "${OUTPUT_DIR}" "${MIN_FREE_SPACE_GIB}"
+    prepare_build_workspace "${OUTPUT_DIR}" "${image_directory_name}" \
+        BUILD_WORKSPACE LOCAL_IMAGE_DIR
+    BUILD_DIR="${BUILD_WORKSPACE}"
     readonly ROOTFS_FILE="${BUILD_DIR}/${ROOTFS_FILENAME}"
     readonly HOMEFS_FILE="${BUILD_DIR}/${HOMEFS_FILENAME}"
     readonly CHECKSUM_FILE="${BUILD_DIR}/SHA256SUMS"
     readonly MANIFEST_FILE="${BUILD_DIR}/manifest.json"
 
-    prepare_build_directory "${BUILD_DIR}"
-    rm -f -- "${CHECKSUM_FILE}" "${MANIFEST_FILE}" \
-        "${CHECKSUM_FILE}.partial" "${MANIFEST_FILE}.partial"
-    check_destination_filesystem "${SOURCE_ROOT}" "${BUILD_DIR}"
-    check_free_space "${BUILD_DIR}" "${MIN_FREE_SPACE_GIB}"
+    log_write INFO "Staging do build: ${BUILD_DIR}"
+    log_write INFO "Imagem local final: ${LOCAL_IMAGE_DIR}"
     ui_info "Gerando ${ROOTFS_FILE}"
     log_write INFO "A captura é feita com o sistema ativo e pode refletir alterações concorrentes."
     log_write INFO "Identidades da máquina-modelo serão removidas do rootfs."
@@ -244,7 +252,7 @@ main() {
     fi
     preparation_seconds=$(( SECONDS - START_TIME ))
 
-    build_rootfs_artifact "${SOURCE_ROOT}" "${BUILD_DIR}" "${ROOTFS_FILE}" \
+    build_rootfs_artifact "${SOURCE_ROOT}" "${OUTPUT_DIR}" "${ROOTFS_FILE}" \
         "${IMAGE_COMPRESSION}" "${ZSTD_LEVEL}"
 
     detect_home_identity "${HOME_SOURCE}" "${HOME_USER}" home_uid home_gid
@@ -259,21 +267,24 @@ main() {
         "${builder_version}" "${IMAGE_COMPRESSION}" "${SOURCE_ROOT}"
     metadata_seconds=$(( SECONDS - metadata_start ))
 
+    validate_image_directory "${BUILD_DIR}"
+
     cleanup_detected_capture_source
 
     rootfs_size="$(format_file_size "${ROOTFS_FILE}")"
     homefs_size="$(format_file_size "${HOMEFS_FILE}")"
+    finalize_build_workspace "${BUILD_WORKSPACE}" "${LOCAL_IMAGE_DIR}"
+    BUILD_WORKSPACE=""
     elapsed="$(( SECONDS - START_TIME ))"
     BUILD_SUCCEEDED=true
 
-    log_write SUCCESS "Rootfs gerado, generalizado e validado: ${ROOTFS_FILE}"
-    log_write SUCCESS "Homefs gerado e validado: ${HOMEFS_FILE}"
-    log_write SUCCESS "Metadados gerados e validados: ${CHECKSUM_FILE}, ${MANIFEST_FILE}"
+    log_write SUCCESS "Imagem local publicada após validação completa: ${LOCAL_IMAGE_DIR}"
     log_write INFO "Tamanho rootfs: ${rootfs_size}; tamanho homefs: ${homefs_size}"
     log_write INFO "Tempos: preparação=${preparation_seconds}s; rootfs_geração=${ROOTFS_GENERATE_SECONDS}s; rootfs_validação=${ROOTFS_VALIDATE_SECONDS}s; homefs_geração=${HOMEFS_GENERATE_SECONDS}s; homefs_validação=${HOMEFS_VALIDATE_SECONDS}s; metadata=${metadata_seconds}s; total=${elapsed}s"
     ui_success "Build concluído"
     printf 'Rootfs: %s (%s)\nHomefs: %s (%s)\nTempos do build:\n  Preparação: %ss\n  Rootfs: %ss (geração %ss, validação %ss)\n  Homefs: %ss (geração %ss, validação %ss)\n  Metadata: %ss\n  Total: %ss\nLog: %s\n' \
-        "${ROOTFS_FILE}" "${rootfs_size}" "${HOMEFS_FILE}" "${homefs_size}" \
+        "${LOCAL_IMAGE_DIR}/${ROOTFS_FILENAME}" "${rootfs_size}" \
+        "${LOCAL_IMAGE_DIR}/${HOMEFS_FILENAME}" "${homefs_size}" \
         "${preparation_seconds}" "$(( ROOTFS_GENERATE_SECONDS + ROOTFS_VALIDATE_SECONDS ))" \
         "${ROOTFS_GENERATE_SECONDS}" "${ROOTFS_VALIDATE_SECONDS}" \
         "$(( HOMEFS_GENERATE_SECONDS + HOMEFS_VALIDATE_SECONDS ))" \

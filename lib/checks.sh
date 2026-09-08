@@ -11,7 +11,7 @@ validate_config() {
     for variable in "${required[@]}"; do
         [[ -n "${!variable:-}" ]] || { ui_error "Configuração obrigatória ausente: ${variable}"; return 1; }
     done
-    [[ "${IMAGE_COMPRESSION}" == gzip || "${IMAGE_COMPRESSION}" == zstd ]] || { ui_error "IMAGE_COMPRESSION deve ser 'gzip' ou 'zstd'."; return 1; }
+    [[ "${IMAGE_COMPRESSION}" == zstd ]] || { ui_error "O formato PMJS publicado exige IMAGE_COMPRESSION='zstd'."; return 1; }
     [[ "${ZSTD_LEVEL}" =~ ^[1-9][0-9]*$ && ${ZSTD_LEVEL} -le 19 ]] || { ui_error "ZSTD_LEVEL deve estar entre 1 e 19."; return 1; }
     [[ "${ROOTFS_FILENAME}" == auto ]] || { ui_error "ROOTFS_FILENAME deve ser 'auto'."; return 1; }
     [[ "${HOMEFS_FILENAME}" == auto ]] || { ui_error "HOMEFS_FILENAME deve ser 'auto'."; return 1; }
@@ -43,7 +43,7 @@ check_root() {
 
 check_dependencies() {
     local command tar_version
-    local dependencies=(tar gzip rsync stat du df realpath readlink getent id date mkdir mktemp install chmod find dirname basename mv rm tr tail awk grep lsblk blkid mount umount sha256sum python3 wc uname)
+    local dependencies=(tar gzip zstd rsync stat du df realpath readlink getent id date mkdir mktemp install chmod find dirname basename mv rm tr tail awk grep lsblk blkid mount umount sha256sum python3 wc uname sort sync)
     for command in "${dependencies[@]}"; do
         command -v "${command}" >/dev/null 2>&1 || { ui_error "Dependência ausente: ${command}"; return 1; }
     done
@@ -131,6 +131,70 @@ check_destination_filesystem() {
     destination_device="$(stat -c '%d' -- "${destination}")"
     [[ "${source_device}" != "${destination_device}" ]] || { ui_error "O destino (${destination}) está no mesmo filesystem da raiz (${source_root}). Monte OUTPUT_DIR em outro filesystem."; return 1; }
     log_write INFO "Filesystem validado: raiz=${source_device}, destino=${destination_device}"
+}
+
+check_local_staging_filesystem() {
+    local staging_dir=$1 filesystem
+
+    filesystem="$(stat --file-system --format='%T' -- "${staging_dir}")"
+    case "${filesystem}" in
+        nfs|nfs4|cifs|smb3|9p|fuse*|exfat|vfat|msdos|ntfs)
+            ui_error "OUTPUT_DIR deve estar em filesystem Linux local; detectado ${filesystem}: ${staging_dir}"
+            return 1
+            ;;
+    esac
+    if declare -F log_write >/dev/null; then
+        log_write INFO "Staging local validado: ${staging_dir} (${filesystem})"
+    fi
+}
+
+prepare_build_workspace() {
+    local output_dir=$1 image_directory_name=$2
+    local -n workspace_ref=$3 final_ref=$4
+
+    final_ref="${output_dir}/${image_directory_name}"
+    [[ ! -e "${final_ref}" && ! -L "${final_ref}" ]] || {
+        ui_error "A versão local já existe e não será substituída: ${final_ref}"
+        return 1
+    }
+    workspace_ref="$(mktemp --directory --tmpdir="${output_dir}" \
+        ".${image_directory_name}.build.XXXXXX")" || {
+        ui_error "Não foi possível criar o staging do build em ${output_dir}"
+        return 1
+    }
+}
+
+cleanup_build_workspace() {
+    local workspace=$1 output_dir=$2 resolved_workspace
+
+    [[ -n "${workspace}" && -e "${workspace}" ]] || return 0
+    resolved_workspace="$(realpath -m -- "${workspace}")"
+    [[ "$(dirname -- "${resolved_workspace}")" == "${output_dir}" &&
+       "$(basename -- "${resolved_workspace}")" == .*.build.* &&
+       -d "${resolved_workspace}" && ! -L "${resolved_workspace}" ]] || {
+        ui_error "Recusa ao limpar staging de build inesperado: ${workspace}"
+        return 1
+    }
+    find -P "${resolved_workspace}" -depth -delete
+}
+
+finalize_build_workspace() {
+    local workspace=$1 final_dir=$2
+
+    [[ -d "${workspace}" && ! -L "${workspace}" &&
+       "$(dirname -- "${workspace}")" == "$(dirname -- "${final_dir}")" &&
+       "$(basename -- "${workspace}")" == .*.build.* &&
+       ! -e "${final_dir}" && ! -L "${final_dir}" ]] || {
+        ui_error "Staging local inseguro ou versão já existente: ${workspace}"
+        return 1
+    }
+    sync --file-system "${workspace}/manifest.json"
+    mv -T --no-clobber -- "${workspace}" "${final_dir}"
+    [[ ! -e "${workspace}" && -d "${final_dir}" ]] || {
+        ui_error "A versão local surgiu durante o build e não foi substituída: ${final_dir}"
+        return 1
+    }
+    sync --file-system "${final_dir}/manifest.json"
 }
 
 check_free_space() {

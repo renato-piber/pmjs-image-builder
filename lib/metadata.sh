@@ -10,6 +10,22 @@ generate_checksums() {
 
 validate_checksums() {
     local build_dir=$1 checksum_file=$2
+    local rootfs_name=${3:-} homefs_name=${4:-}
+    local -a checksum_lines
+
+    if [[ -z "${rootfs_name}" || -z "${homefs_name}" ]]; then
+        if [[ -f "${build_dir}/rootfs.tar.zst" && -f "${build_dir}/homefs.tar.zst" ]]; then
+            rootfs_name=rootfs.tar.zst
+            homefs_name=homefs.tar.zst
+        elif [[ -f "${build_dir}/rootfs.tar.gz" && -f "${build_dir}/homefs.tar.gz" ]]; then
+            rootfs_name=rootfs.tar.gz
+            homefs_name=homefs.tar.gz
+        else
+            ui_error "Não foi possível inferir os archives cobertos por SHA256SUMS"
+            return 1
+        fi
+    fi
+
     [[ -s "${checksum_file}" ]] || { ui_error "SHA256SUMS vazio"; return 1; }
     [[ $(wc -l < "${checksum_file}") -eq 2 ]] || {
         ui_error "SHA256SUMS deve conter exatamente dois artefatos"
@@ -17,6 +33,21 @@ validate_checksums() {
     }
     ! grep -Fq -- '.partial' "${checksum_file}" || {
         ui_error "SHA256SUMS contém arquivo temporário"
+        return 1
+    }
+    mapfile -t checksum_lines < "${checksum_file}"
+    [[ ${#checksum_lines[0]} -eq $(( 64 + 2 + ${#rootfs_name} )) &&
+       "${checksum_lines[0]:64:2}" == "  " &&
+       "${checksum_lines[0]:66}" == "${rootfs_name}" &&
+       "${checksum_lines[0]:0:64}" != *[!0-9a-f]* ]] || {
+        ui_error "SHA256SUMS não contém a entrada canônica de ${rootfs_name}"
+        return 1
+    }
+    [[ ${#checksum_lines[1]} -eq $(( 64 + 2 + ${#homefs_name} )) &&
+       "${checksum_lines[1]:64:2}" == "  " &&
+       "${checksum_lines[1]:66}" == "${homefs_name}" &&
+       "${checksum_lines[1]:0:64}" != *[!0-9a-f]* ]] || {
+        ui_error "SHA256SUMS não contém a entrada canônica de ${homefs_name}"
         return 1
     }
     (cd -- "${build_dir}" && sha256sum --check --strict -- "$(basename -- "${checksum_file}")")
@@ -71,20 +102,119 @@ validate_manifest() {
 import hashlib
 import json
 import os
+import re
 import sys
+from datetime import datetime
 
 manifest_path, rootfs, homefs, compression = sys.argv[1:]
 with open(manifest_path, encoding="utf-8") as stream:
     data = json.load(stream)
-assert data["schema_version"] == 1
-assert data["compression"] == compression
+
+required = {
+    "schema_version", "image_name", "image_version", "created_at",
+    "builder_version", "compression", "architecture",
+    "distribution", "builder_kernel", "rootfs", "homefs",
+}
+if set(data) != required:
+    raise ValueError("campos do manifest divergem do schema 1")
+if type(data["schema_version"]) is not int or data["schema_version"] != 1:
+    raise ValueError("schema_version do formato PMJS inválida")
+if data["compression"] != compression:
+    raise ValueError("compressão do manifest diverge da imagem")
+for field in ("image_name", "image_version", "builder_version", "architecture",
+              "distribution", "builder_kernel"):
+    if not isinstance(data[field], str) or not data[field]:
+        raise ValueError(f"campo textual inválido: {field}")
+for field in ("image_name", "image_version"):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", data[field]):
+        raise ValueError(f"identificador inseguro: {field}")
+try:
+    datetime.strptime(data["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+except (TypeError, ValueError):
+    raise ValueError("created_at não está em UTC/RFC 3339")
 for key, path in (("rootfs", rootfs), ("homefs", homefs)):
+    if not isinstance(data[key], dict) or set(data[key]) != {"filename", "sha256", "size_bytes"}:
+        raise ValueError(f"descritor inválido: {key}")
+    if type(data[key]["size_bytes"]) is not int or data[key]["size_bytes"] <= 0:
+        raise ValueError(f"size_bytes inválido: {key}")
+    if not isinstance(data[key]["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", data[key]["sha256"]):
+        raise ValueError(f"sha256 inválido: {key}")
     digest = hashlib.sha256()
     with open(path, "rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
-    assert data[key]["filename"] == os.path.basename(path)
-    assert data[key]["size_bytes"] == os.path.getsize(path)
-    assert data[key]["sha256"] == digest.hexdigest()
+    if data[key]["filename"] != os.path.basename(path):
+        raise ValueError(f"filename divergente: {key}")
+    if data[key]["size_bytes"] != os.path.getsize(path):
+        raise ValueError(f"size_bytes divergente: {key}")
+    if data[key]["sha256"] != digest.hexdigest():
+        raise ValueError(f"sha256 divergente: {key}")
+
+PY
+}
+
+validate_image_directory() {
+    local image_dir=$1
+    local rootfs_file="${image_dir}/rootfs.tar.zst"
+    local homefs_file="${image_dir}/homefs.tar.zst"
+    local checksum_file="${image_dir}/SHA256SUMS"
+    local manifest_file="${image_dir}/manifest.json"
+    local path name
+    local -a expected=(SHA256SUMS homefs.tar.zst manifest.json rootfs.tar.zst)
+    local -a actual=()
+
+    [[ -d "${image_dir}" && ! -L "${image_dir}" ]] || {
+        ui_error "Diretório de imagem inválido: ${image_dir}"
+        return 1
+    }
+    while IFS= read -r -d '' path; do
+        name="$(basename -- "${path}")"
+        [[ -f "${path}" && ! -L "${path}" ]] || {
+            ui_error "A imagem contém item que não é arquivo regular: ${name}"
+            return 1
+        }
+        actual+=("${name}")
+    done < <(find -P "${image_dir}" -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z)
+    [[ "${actual[*]}" == "${expected[*]}" ]] || {
+        ui_error "Conteúdo do diretório diverge do formato PMJS schema 1"
+        return 1
+    }
+    [[ -s "${rootfs_file}" && -s "${homefs_file}" && -s "${checksum_file}" &&
+       -s "${manifest_file}" ]] || {
+        ui_error "Imagem PMJS contém arquivo ausente ou vazio"
+        return 1
+    }
+
+    validate_archive_compression "${rootfs_file}" zstd || {
+        ui_error "rootfs.tar.zst inválido"
+        return 1
+    }
+    validate_archive_compression "${homefs_file}" zstd || {
+        ui_error "homefs.tar.zst inválido"
+        return 1
+    }
+    tar --list --zstd --file "${rootfs_file}" >/dev/null || {
+        ui_error "rootfs.tar.zst não contém um tar legível"
+        return 1
+    }
+    tar --list --zstd --file "${homefs_file}" >/dev/null || {
+        ui_error "homefs.tar.zst não contém um tar legível"
+        return 1
+    }
+    validate_checksums "${image_dir}" "${checksum_file}" \
+        rootfs.tar.zst homefs.tar.zst || return 1
+    validate_manifest "${manifest_file}" "${rootfs_file}" "${homefs_file}" zstd || return 1
+    python3 - "${manifest_file}" "$(basename -- "${image_dir}")" <<'PY'
+import json
+import re
+import sys
+
+manifest_path, actual_directory = sys.argv[1:]
+with open(manifest_path, encoding="utf-8") as stream:
+    data = json.load(stream)
+expected = f'{data["image_name"]}-{data["image_version"]}'
+staging_pattern = rf"\.{re.escape(expected)}\.(?:build|partial)\.[A-Za-z0-9]+"
+if actual_directory != expected and not re.fullmatch(staging_pattern, actual_directory):
+    raise ValueError("nome do diretório diverge de image_name/image_version")
 PY
 }
