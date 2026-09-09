@@ -37,6 +37,7 @@ build_tar_command() {
         --exclude='./etc/machine-id'
         --exclude='./var/lib/dbus/machine-id'
         --exclude='./etc/ssh/ssh_host_*'
+        --exclude='./etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf'
         --exclude='./var/lib/ocsinventory-agent'
         --exclude='./var/lib/ocsinventory-agent/*'
         --exclude='./var/cache/ocsinventory-agent'
@@ -45,10 +46,11 @@ build_tar_command() {
         --exclude='./var/log/ocsinventory-client/*'
         --exclude="${output_pattern}"
         --exclude="${output_pattern}/*"
+        '--transform=flags=r;s#^\./\.pmjs-generalization/etc/systemd/system/ssh\.service\.d/10-pmjs-generate-host-keys\.conf$#./etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf#'
         --directory="${source_root}"
         .
         --directory="${generalization_staging}"
-        .
+        ./.pmjs-generalization/etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf
     )
 }
 
@@ -79,6 +81,8 @@ validate_rootfs() {
     local output_pattern
     local listing
     local required_entry
+    local generalization_entry_count
+    local generalization_content expected_generalization_content
     local -a read_options
     local required_entries=(
         ./etc/passwd
@@ -137,9 +141,26 @@ validate_rootfs() {
         }
     done
 
-    tar --extract --to-stdout "${read_options[@]}" --file "${archive_file}" \
-        ./etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf | \
-        grep -Fqx -- 'ExecStartPre=/usr/bin/ssh-keygen -A' || {
+    generalization_entry_count="$(grep -Fxc -- \
+        './etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf' \
+        <<< "${listing}")"
+    [[ "${generalization_entry_count}" -eq 1 ]] || {
+        ui_error "O mecanismo de regeneração SSH deve aparecer exatamente uma vez no rootfs"
+        return 1
+    }
+
+    generalization_content="$(tar --extract --to-stdout "${read_options[@]}" \
+        --file "${archive_file}" \
+        ./etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf)" || {
+        ui_error "Falha ao ler o mecanismo de regeneração SSH do rootfs"
+        return 1
+    }
+    expected_generalization_content="$(printf '%s\n' \
+        '[Service]' \
+        'ExecStartPre=' \
+        'ExecStartPre=/usr/bin/ssh-keygen -A' \
+        'ExecStartPre=/usr/sbin/sshd -t')"
+    [[ "${generalization_content}" == "${expected_generalization_content}" ]] || {
         ui_error "Regeneração de host keys SSH ausente do rootfs"
         return 1
     }

@@ -20,6 +20,16 @@ ordem, somente as entradas canônicas de `rootfs.tar.zst` e `homefs.tar.zst`.
 builder, compressão, arquitetura, distribuição, kernel do builder e, para cada
 archive, nome, tamanho e SHA-256. Ele não contém identidades da máquina-modelo.
 
+`VERSION` identifica a versão do software PMJS Image Builder e é gravado em
+`builder_version` no manifest. `IMAGE_VERSION`, carregado exclusivamente de
+`config/image.conf`, identifica a imagem produzida e determina o nome
+`pmjs-linux-<versão>/`. Os dois valores são independentes e não precisam ser
+iguais.
+No início do build, o log registra os dois valores e os respectivos arquivos de
+origem. Assim, o nome `.pmjs-linux-0.1.0.build.*` indica necessariamente que a
+cópia executada carregou `IMAGE_VERSION=0.1.0` do seu próprio
+`config/image.conf`; a opção `--nfs-dir` não altera a versão.
+
 Zstandard nível 3 é o padrão por priorizar instalação e descompressão rápidas:
 
 ```text
@@ -39,6 +49,10 @@ OCS Inventory não entram no archive. A configuração do OCS, `sshd_config` e a
 senha institucional do x11vnc são preservadas. No sistema instalado, systemd
 gera um novo `machine-id`, o agente OCS recria seu estado e um drop-in de
 `ssh.service` executa `ssh-keygen -A` antes de validar e iniciar o servidor SSH.
+O drop-in é criado em um overlay Linux local, validado antes do tar e inserido
+como membro explícito e único. Uma cópia de mesmo nome eventualmente existente
+na máquina-modelo é excluída, portanto não pode preceder nem substituir o
+mecanismo gerado pelo Builder.
 
 Os pseudo-filesystems `/proc`, `/sys`, `/dev` e `/run` não fazem parte do
 archive. Esses diretórios são recriados ou montados pelo sistema durante a
@@ -206,7 +220,8 @@ Os testes não capturam o sistema real e usam árvores temporárias sintéticas:
 
 Eles cobrem gzip interno, formato Zstandard publicado, integridade cruzada do
 manifest e SHA256SUMS, rejeição de corrupção, staging local, build NFS simulado,
-falhas por fase, preservação de metadados e publicação atômica/imutável.
+falhas por fase, preservação de metadados, equivalência semântica do rootfs
+generalizado nos caminhos local e NFS e publicação atômica/imutável.
 
 ## Integração com o Deploy
 

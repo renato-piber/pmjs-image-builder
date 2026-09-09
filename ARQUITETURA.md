@@ -62,6 +62,37 @@ O staging da home continua local porque a whitelist é materializada com
 também continua local, mas contém apenas o drop-in de regeneração das host keys.
 Logs e diretórios temporários de detecção/mount permanecem locais e pequenos.
 
+O overlay não é acrescentado como uma segunda árvore raiz genérica. O tar exclui
+da origem qualquer cópia do drop-in
+`etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf` e inclui
+explicitamente a cópia validada do overlay, transformando apenas seu prefixo
+interno. Assim o archive contém exatamente uma entrada nesse path, com
+`ssh-keygen -A`; as host keys `etc/ssh/ssh_host_*` continuam excluídas. O mesmo
+comando e a mesma validação são usados para staging local e NFS.
+
+`VERSION` pertence ao Builder e alimenta somente `builder_version` no manifest.
+`IMAGE_VERSION` pertence ao artefato, é lido de `config/image.conf` e compõe o
+nome do diretório final. Não existe requisito de igualdade entre eles.
+
+### Auditoria da regressão do overlay
+
+No pipeline local anterior, o staging de generalização ficava junto ao staging
+local do build. O comando tar recebia duas árvores chamadas `.`: primeiro
+`SOURCE_ROOT` e depois o overlay. No pipeline NFS, os archives passaram a ser
+gravados diretamente no NFS e o overlay foi movido para `LOCAL_TEMP_DIR`, mas a
+mesma composição genérica de duas árvores `.` foi mantida. Portanto, o fluxo
+`tar -> zstd -> NFS` não altera os metadados internos, porém a incorporação do
+overlay não era autoritativa: a origem e o overlay podiam fornecer o mesmo path
+e produzir entradas duplicadas.
+
+A composição atual valida o overlay local antes da captura, exclui da origem a
+cópia conflitante, adiciona somente o arquivo gerado e exige no archive uma
+única entrada com o conteúdo completo esperado. A validação continua rejeitando
+o rootfs com a mensagem `Regeneração de host keys SSH ausente do rootfs` quando
+esse conteúdo diverge. O teste de regressão gera os dois caminhos a partir da
+mesma origem — inclusive com um drop-in deliberadamente incorreto — e compara
+entradas, conteúdo, UID/GID, ACL, xattr, modo e symlink após a extração.
+
 ## Política de publicação
 
 - a imagem de origem deve estar completa antes de iniciar;

@@ -11,6 +11,16 @@ log_write() { :; }
 
 test_root="$(mktemp -d)"
 trap '[[ -n "${test_root:-}" && "${test_root}" == /tmp/* ]] && rm -rf -- "${test_root}"' EXIT
+
+# VERSION identifica o software Builder; IMAGE_VERSION identifica somente o
+# artefato produzido. Uma divergência deliberada não pode bloquear o build.
+printf '%s\n' '1.2.3-builder' > "${test_root}/VERSION"
+IMAGE_VERSION=9.8.7-image
+builder_version=""
+load_builder_version "${test_root}/VERSION" builder_version
+[[ "${builder_version}" == 1.2.3-builder ]]
+[[ "${IMAGE_VERSION}" == 9.8.7-image ]]
+
 source_root="${test_root}/source"
 staging="${test_root}/home-staging"
 build_dir="${test_root}/build"
@@ -55,11 +65,14 @@ home_archive="${build_dir}/homefs.tar.zst"
 checksums="${build_dir}/SHA256SUMS"
 manifest="${build_dir}/manifest.json"
 build_metadata_artifacts "${build_dir}" "${root_archive}" "${home_archive}" \
-    "${checksums}" "${manifest}" pmjs-linux 0.1.0 0.1.0 zstd "${source_root}"
+    "${checksums}" "${manifest}" pmjs-linux "${IMAGE_VERSION}" \
+    "${builder_version}" zstd "${source_root}"
 validate_checksums "${build_dir}" "${checksums}"
 validate_manifest "${manifest}" "${root_archive}" "${home_archive}" zstd
 grep -Fq -- 'rootfs.tar.zst' "${manifest}"
 grep -Fq -- 'homefs.tar.zst' "${manifest}"
+grep -Fq -- '"image_version": "9.8.7-image"' "${manifest}"
+grep -Fq -- '"builder_version": "1.2.3-builder"' "${manifest}"
 ! grep -Fq -- '.partial' "${checksums}"
 [[ ! -e "${checksums}.partial" && ! -e "${manifest}.partial" ]]
 

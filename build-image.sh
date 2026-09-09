@@ -157,6 +157,7 @@ build_rootfs_artifact() {
     validate_generalization_source "${source_root}" || return 1
     GENERALIZATION_BUILD_DIR="${local_staging_parent}"
     prepare_generalization_staging "${local_staging_parent}" GENERALIZATION_STAGING || return 1
+    validate_generalization_staging "${GENERALIZATION_STAGING}" || return 1
     log_write INFO "Staging de generalização: ${GENERALIZATION_STAGING}"
 
     ROOTFS_TEMP_FILE="${rootfs_file}.partial"
@@ -258,8 +259,7 @@ main() {
         BUILD_NFS_DIR=${NFS_IMAGES_DIR}
     fi
     check_compression_dependency "${IMAGE_COMPRESSION}"
-    validate_version_file "${version_file}" "${IMAGE_VERSION}"
-    builder_version="$(tr -d '[:space:]' < "${version_file}")"
+    load_builder_version "${version_file}" builder_version
     extension="$(archive_extension "${IMAGE_COMPRESSION}")"
     ROOTFS_FILENAME="rootfs.${extension}"
     HOMEFS_FILENAME="homefs.${extension}"
@@ -277,6 +277,7 @@ main() {
     init_log "${LOG_DIR}"
     log_write INFO "Iniciando build ${IMAGE_NAME}-${IMAGE_VERSION}"
     log_write INFO "Configuração carregada de ${config_file}"
+    log_write INFO "Versões independentes: builder=${builder_version} (VERSION), imagem=${IMAGE_VERSION} (config/image.conf)"
 
     if [[ "${SOURCE_ROOT}" == auto ]]; then
         [[ "${HOME_SOURCE}" == auto ]] || {

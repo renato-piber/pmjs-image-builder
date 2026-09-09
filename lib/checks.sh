@@ -26,11 +26,18 @@ validate_config() {
     [[ "${IMAGE_VERSION}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || { ui_error "IMAGE_VERSION contém caracteres inválidos."; return 1; }
 }
 
-validate_version_file() {
-    local version_file=$1 configured_version=$2 file_version
+load_builder_version() {
+    local version_file=$1
+    local -n version_ref=$2
+    local file_version
+
     [[ -r "${version_file}" ]] || { ui_error "Arquivo VERSION não encontrado: ${version_file}"; return 1; }
     file_version="$(tr -d '[:space:]' < "${version_file}")"
-    [[ "${file_version}" == "${configured_version}" ]] || { ui_error "Versões divergentes: VERSION=${file_version}, image.conf=${configured_version}"; return 1; }
+    [[ "${file_version}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || {
+        ui_error "Versão inválida do Image Builder em VERSION: ${file_version:-vazia}"
+        return 1
+    }
+    version_ref=${file_version}
 }
 
 resolve_project_path() {

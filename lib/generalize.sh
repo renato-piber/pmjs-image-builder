@@ -31,7 +31,7 @@ prepare_generalization_staging() {
     local dropin_dir
 
     staging_ref="$(mktemp --directory --tmpdir="${build_dir}" '.rootfs-generalize.XXXXXX')"
-    dropin_dir="${staging_ref}/etc/systemd/system/ssh.service.d"
+    dropin_dir="${staging_ref}/.pmjs-generalization/etc/systemd/system/ssh.service.d"
     install -d -m 0755 -- "${dropin_dir}"
     printf '%s\n' \
         '[Service]' \
@@ -40,6 +40,32 @@ prepare_generalization_staging() {
         'ExecStartPre=/usr/sbin/sshd -t' \
         > "${dropin_dir}/10-pmjs-generate-host-keys.conf"
     chmod 0644 -- "${dropin_dir}/10-pmjs-generate-host-keys.conf"
+}
+
+validate_generalization_staging() {
+    local staging_dir=$1
+    local dropin="${staging_dir}/.pmjs-generalization/etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf"
+    local expected actual expected_owner
+
+    [[ -f "${dropin}" && ! -L "${dropin}" ]] || {
+        ui_error "Drop-in de regeneração SSH ausente ou inválido no overlay"
+        return 1
+    }
+    expected="$(printf '%s\n' \
+        '[Service]' \
+        'ExecStartPre=' \
+        'ExecStartPre=/usr/bin/ssh-keygen -A' \
+        'ExecStartPre=/usr/sbin/sshd -t')"
+    actual="$(<"${dropin}")"
+    [[ "${actual}" == "${expected}" ]] || {
+        ui_error "Conteúdo inválido no drop-in de regeneração SSH do overlay"
+        return 1
+    }
+    expected_owner="$(id -u):$(id -g)"
+    [[ "$(stat -c '%a:%u:%g' -- "${dropin}")" == "644:${expected_owner}" ]] || {
+        ui_error "Permissões ou owner inválidos no drop-in de regeneração SSH"
+        return 1
+    }
 }
 
 cleanup_generalization_staging() {

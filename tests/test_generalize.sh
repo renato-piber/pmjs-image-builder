@@ -27,7 +27,8 @@ validate_generalization_source "${source_root}"
 
 staging=""
 prepare_generalization_staging "${build_dir}" staging
-dropin="${staging}/etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf"
+validate_generalization_staging "${staging}"
+dropin="${staging}/.pmjs-generalization/etc/systemd/system/ssh.service.d/10-pmjs-generate-host-keys.conf"
 grep -Fqx -- 'ExecStartPre=' "${dropin}"
 grep -Fqx -- 'ExecStartPre=/usr/bin/ssh-keygen -A' "${dropin}"
 grep -Fqx -- 'ExecStartPre=/usr/sbin/sshd -t' "${dropin}"
