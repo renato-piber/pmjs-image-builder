@@ -71,8 +71,17 @@ configurado por `LOCAL_TEMP_DIR` e seu tamanho máximo continua limitado por
 
 ## Build local ou direto no NFS
 
-Sem argumentos, `OUTPUT_DIR` continua sendo o staging Linux local. O build ocorre
-primeiro em um diretório oculto `.pmjs-linux-<versão>.build.*`; depois de validar
+Na configuração distribuída, o build monta automaticamente o servidor oficial:
+
+```bash
+NFS_ENABLED=1
+NFS_SERVER="192.168.0.19"
+NFS_EXPORT="/var/clone-pmjs"
+NFS_MOUNTPOINT="/mnt/clone-pmjs"
+```
+
+Esses valores são definidos em `config/image.conf`. O build ocorre primeiro em
+um diretório oculto `.pmjs-linux-<versão>.build.*` no destino; depois de validar
 os archives, SHA256, manifest e o conjunto completo, esse diretório é renomeado
 para `pmjs-linux-<versão>/`. Uma versão existente nunca é substituída.
 
@@ -80,8 +89,14 @@ para `pmjs-linux-<versão>/`. Uma versão existente nunca é substituída.
 sudo ./build-image.sh
 ```
 
-Na PMJS Live, o destino NFS pode ser informado explicitamente. O diretório deve
-existir dentro de um NFS já montado:
+O Builder cria o mountpoint se necessário e consulta o mount exato com
+`findmnt`. Se existir, deve ser `nfs`/`nfs4` e ter a origem configurada (comparação
+exata de `NFS_SERVER:NFS_EXPORT`). Caso contrário, o build é abortado. Se não
+existir, executa `mount -t nfs` e exige nova confirmação por `findmnt` antes de
+selecionar o destino. Uma falha jamais permite continuar no diretório local que
+ficou sob o mountpoint. Não é necessário fazer ping ou montar manualmente.
+
+Também é possível informar um destino NFS já montado explicitamente:
 
 ```bash
 sudo mkdir -p /mnt/pmjs-images
@@ -89,8 +104,29 @@ sudo mount -t nfs 192.168.0.19:/var/clone-pmjs /mnt/pmjs-images
 sudo ./build-image.sh --nfs-dir /mnt/pmjs-images
 ```
 
-Também é possível definir `NFS_IMAGES_DIR` em `config/image.conf`. Não há servidor
-ou mountpoint implícito no código.
+A precedência é:
+
+1. `--nfs-dir CAMINHO`: usa o NFS já montado, sem automount e sem desmontagem;
+   mantém a validação existente e permite outro export ou subdiretório.
+2. Sem a opção, `NFS_ENABLED=1`: monta/reutiliza o servidor, export e mountpoint
+   de `config/image.conf`. Nesse modo, `NFS_IMAGES_DIR` não é usado.
+3. `NFS_ENABLED=0` ou ausente: usa `NFS_IMAGES_DIR` legado, se preenchido, ou
+   `OUTPUT_DIR` local. Configurações antigas sem os novos campos continuam válidas.
+
+Para build local, configure `NFS_ENABLED=0` e `NFS_IMAGES_DIR=""`.
+O mountpoint automático deve ser absoluto, canônico, específico, sem symlinks,
+espaços ou `..`; paths amplos como `/`, `/mnt`, `/var`, `/tmp` e diretórios de
+sistema são rejeitados.
+
+O Builder registra se realizou o mount (`NFS_MOUNTED_BY_BUILDER`) e sua identidade
+(origem, tipo, alvo e ID). Em sucesso, erro, `SIGINT` ou `SIGTERM`, o cleanup
+remove somente seu workspace validado e então desmonta apenas o mount criado
+por ele. Um mount pré-existente nunca é desmontado. Se a identidade mudar ou
+não puder ser confirmada, o staging e o mount são deixados intactos com aviso.
+Falhas de `umount` geram aviso sem substituir o código de saída original. Não
+há desmontagem forçada ou lazy; o diretório do mountpoint não é removido.
+`SIGKILL` e desligamento abrupto não permitem executar cleanup; o mount pode
+permanecer e será tratado como pré-existente na próxima execução.
 
 Nesse modo, GNU tar lê `SOURCE_ROOT` ou o staging filtrado da home e envia o fluxo
 comprimido pelo Zstandard diretamente para arquivos `.partial` no workspace NFS.
@@ -131,6 +167,9 @@ A atomicidade é por destino; não existe transação atômica entre Ventoy e NF
 - Linux e Bash 4.3 ou superior
 - execução do `build-image.sh` como `root`; o publisher requer apenas acesso de escrita
 - GNU tar com suporte a ACLs e atributos estendidos
+- para automount NFS: `mount`, `umount`, `findmnt` (util-linux) e `mount.nfs`
+  (cliente `nfs-common` no Debian/PMJS Live), verificados antes da montagem;
+  `--nfs-dir` e `NFS_IMAGES_DIR` legado exigem `findmnt` e um NFS já montado
 - gzip (compatibilidade interna) e zstd
 - rsync com suporte a ACLs e atributos estendidos
 - Python 3 (serialização e validação robusta do manifest JSON)
@@ -222,6 +261,11 @@ Eles cobrem gzip interno, formato Zstandard publicado, integridade cruzada do
 manifest e SHA256SUMS, rejeição de corrupção, staging local, build NFS simulado,
 falhas por fase, preservação de metadados, equivalência semântica do rootfs
 generalizado nos caminhos local e NFS e publicação atômica/imutável.
+`test_nfs_automount.sh` usa mocks de `mount`, `umount`, `findmnt` e do cliente
+NFS. Cobre montagem/reutilização, origem ou filesystem errado, falhas de mount
+e confirmação, paths perigosos, dependências, precedência, abortar o main antes
+da captura e cleanup após sucesso, erro, interrupção ou substituição do mount.
+Não monta servidor NFS real.
 
 ## Integração com o Deploy
 

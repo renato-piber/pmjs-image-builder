@@ -20,6 +20,23 @@ completa testa os dois fluxos Zstandard, lista os dois tars, verifica
 
 ## Pipeline
 
+Antes de detectar a origem ou criar o workspace, `lib/nfs.sh` seleciona o
+destino: `--nfs-dir` tem precedência; sem ele, `NFS_ENABLED=1` ativa o automount
+configurado. Com `NFS_ENABLED=0` ou ausente, mantém-se `NFS_IMAGES_DIR` legado ou
+`OUTPUT_DIR` local. O automount não modifica nenhuma etapa de geração, schema,
+generalização, hash, validação ou rename final abaixo.
+
+O automount consulta `findmnt --mountpoint` (mount exato), verifica tipo NFS/NFS4
+e origem configurada, ou executa `mount -t nfs` e exige a mesma confirmação.
+Registra o ID do mount além de origem e alvo. O cleanup valida novamente essa
+identidade antes de remover seu workspace; só chama `umount` quando
+`NFS_MOUNTED_BY_BUILDER=1`. Nunca desmonta mounts pré-existentes, alterados ou
+sem confirmação; falhas geram warning e preservam o resultado principal. Os
+arquivos parciais são removidos junto ao workspace validado, sem `rm` por paths
+isolados. Os temporários locais são limpos antes da desmontagem; logs são
+preservados. Se um sinal chegar durante o mount, o handler aguarda seu retorno
+e a confirmação para registrar a responsabilidade antes de executar cleanup.
+
 ```text
 origem montada/auto-detectada
           |

@@ -10,6 +10,8 @@ source "${PROJECT_DIR}/lib/logs.sh"
 source "${PROJECT_DIR}/lib/ui.sh"
 # shellcheck source=lib/checks.sh
 source "${PROJECT_DIR}/lib/checks.sh"
+# shellcheck source=lib/nfs.sh
+source "${PROJECT_DIR}/lib/nfs.sh"
 # shellcheck source=lib/archive.sh
 source "${PROJECT_DIR}/lib/archive.sh"
 # shellcheck source=lib/source_detect.sh
@@ -62,27 +64,22 @@ cleanup() {
         HOMEFS_STAGING=""
         HOMEFS_STAGING_PARENT=""
     fi
-    if [[ -n "${HOMEFS_TEMP_FILE:-}" && -e "${HOMEFS_TEMP_FILE}" ]]; then
-        rm -f -- "${HOMEFS_TEMP_FILE}"
-        log_write WARN "Homefs temporário removido: ${HOMEFS_TEMP_FILE}"
-    fi
-    if [[ -n "${ROOTFS_TEMP_FILE:-}" && -e "${ROOTFS_TEMP_FILE}" ]]; then
-        rm -f -- "${ROOTFS_TEMP_FILE}"
-        log_write WARN "Arquivo temporário removido: ${ROOTFS_TEMP_FILE}"
-    fi
-    if [[ -n "${CHECKSUM_TEMP_FILE:-}" && -e "${CHECKSUM_TEMP_FILE}" ]]; then
-        rm -f -- "${CHECKSUM_TEMP_FILE}"
-    fi
-    if [[ -n "${MANIFEST_TEMP_FILE:-}" && -e "${MANIFEST_TEMP_FILE}" ]]; then
-        rm -f -- "${MANIFEST_TEMP_FILE}"
-    fi
+    # Os archives parciais pertencem ao workspace validado; nunca remover um
+    # arquivo apontado isoladamente, nem limpar um NFS que tenha sido trocado.
     if [[ -n "${BUILD_WORKSPACE:-}" ]]; then
-        cleanup_build_workspace "${BUILD_WORKSPACE}" "${OUTPUT_DIR:-}" || exit_code=1
+        if [[ -n "${NFS_ACTIVE_MOUNTPOINT}" ]] && ! nfs_active_mount_unchanged; then
+            ui_warn "Staging NFS não removido: identidade do mount mudou ou não pôde ser confirmada."
+        else
+            cleanup_build_workspace "${BUILD_WORKSPACE}" "${OUTPUT_DIR:-}" || {
+                [[ ${exit_code} -ne 0 ]] || exit_code=1
+            }
+        fi
         BUILD_WORKSPACE=""
     fi
     if [[ -n "${SOURCE_DETECT_DIR:-}" ]]; then
         cleanup_detected_capture_source || exit_code=1
     fi
+    cleanup_nfs_mount
 
     if [[ "${BUILD_SUCCEEDED}" != true && ${exit_code} -ne 0 ]]; then
         ui_error "Build interrompido (código ${exit_code}). Consulte: ${LOG_FILE:-log não inicializado}"
@@ -102,6 +99,10 @@ on_error() {
 
 on_signal() {
     local signal=$1
+    if [[ "${NFS_MOUNT_IN_PROGRESS}" == 1 ]]; then
+        NFS_PENDING_SIGNAL=${signal}
+        return 0
+    fi
     log_write WARN "Sinal ${signal} recebido; interrompendo o build."
     [[ "${signal}" == INT ]] && exit 130
     exit 143
@@ -117,10 +118,12 @@ usage() {
 Uso:
   sudo ./build-image.sh [--nfs-dir DIRETÓRIO]
 
-Sem argumentos, o build usa OUTPUT_DIR local de config/image.conf.
+Sem --nfs-dir, NFS_ENABLED=1 monta/reutiliza o NFS de config/image.conf.
+Com NFS_ENABLED=0 (ou ausente), usa NFS_IMAGES_DIR legado ou OUTPUT_DIR local.
 Com --nfs-dir, os archives são gerados diretamente em um staging oculto no
 filesystem NFS informado e a imagem só aparece após validação e rename final.
-O diretório deve existir, estar montado e ser gravável.
+Essa opção tem precedência: o diretório deve existir, estar montado e ser
+gravável; o Builder não monta nem desmonta esse destino explícito.
 EOF
 }
 
@@ -129,6 +132,7 @@ parse_build_arguments() {
         case "$1" in
             --nfs-dir)
                 (( $# >= 2 )) || { ui_error "Valor ausente para --nfs-dir"; return 1; }
+                [[ -n "$2" ]] || { ui_error "Valor vazio para --nfs-dir"; return 1; }
                 [[ -z "${BUILD_NFS_DIR}" ]] || {
                     ui_error "--nfs-dir foi informado mais de uma vez"
                     return 1
@@ -255,9 +259,6 @@ main() {
     # shellcheck source=config/image.conf
     source "${config_file}"
     validate_config
-    if [[ -z "${BUILD_NFS_DIR}" && -n "${NFS_IMAGES_DIR:-}" ]]; then
-        BUILD_NFS_DIR=${NFS_IMAGES_DIR}
-    fi
     check_compression_dependency "${IMAGE_COMPRESSION}"
     load_builder_version "${version_file}" builder_version
     extension="$(archive_extension "${IMAGE_COMPRESSION}")"
@@ -278,6 +279,11 @@ main() {
     log_write INFO "Iniciando build ${IMAGE_NAME}-${IMAGE_VERSION}"
     log_write INFO "Configuração carregada de ${config_file}"
     log_write INFO "Versões independentes: builder=${builder_version} (VERSION), imagem=${IMAGE_VERSION} (config/image.conf)"
+
+    if ! select_build_nfs_destination; then
+        ui_error "Build não iniciado."
+        return 1
+    fi
 
     if [[ "${SOURCE_ROOT}" == auto ]]; then
         [[ "${HOME_SOURCE}" == auto ]] || {
