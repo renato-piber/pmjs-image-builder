@@ -213,7 +213,7 @@ manifest_path, actual_directory = sys.argv[1:]
 with open(manifest_path, encoding="utf-8") as stream:
     data = json.load(stream)
 expected = f'{data["image_name"]}-{data["image_version"]}'
-staging_pattern = rf"\.{re.escape(expected)}\.(?:build|partial)\.[A-Za-z0-9]+"
+staging_pattern = rf"\.{re.escape(expected)}\.(?:build|partial|sync)\.[A-Za-z0-9]+"
 if actual_directory != expected and not re.fullmatch(staging_pattern, actual_directory):
     raise ValueError("nome do diretório diverge de image_name/image_version")
 PY

@@ -1,0 +1,16 @@
+[para subir no pendrive]
+
+sudo mkdir -p /mnt/clone-pmjs
+sudo mount -t nfs 192.168.0.19:/var/clone-pmjs /mnt/clone-pmjs
+
+mkdir -p /media/usuario/Ventoy/pmjs-images
+
+bash ./publish-image.sh \
+  --image-dir /mnt/clone-pmjs/pmjs-linux-0.2.0 \
+  --ventoy-dir /media/usuario/Ventoy/pmjs-images
+
+[para subir no NFS]
+
+bash ./publish-image.sh \
+  --image-dir /var/tmp/pmjs-image-builder/output/pmjs-linux-0.2.0 \
+  --nfs-dir /mnt/clone-pmjs

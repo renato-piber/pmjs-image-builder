@@ -12,6 +12,8 @@ source "${PROJECT_DIR}/lib/ui.sh"
 source "${PROJECT_DIR}/lib/checks.sh"
 # shellcheck source=lib/nfs.sh
 source "${PROJECT_DIR}/lib/nfs.sh"
+# shellcheck source=lib/ventoy.sh
+source "${PROJECT_DIR}/lib/ventoy.sh"
 # shellcheck source=lib/archive.sh
 source "${PROJECT_DIR}/lib/archive.sh"
 # shellcheck source=lib/source_detect.sh
@@ -38,6 +40,7 @@ BUILD_DIR=""
 BUILD_WORKSPACE=""
 LOCAL_IMAGE_DIR=""
 BUILD_NFS_DIR=""
+BUILD_VENTOY_DIR=""
 BUILD_DESTINATION_KIND="local"
 LOCAL_TEMP_DIR_RESOLVED=""
 HOMEFS_STAGING_PARENT=""
@@ -67,7 +70,9 @@ cleanup() {
     # Os archives parciais pertencem ao workspace validado; nunca remover um
     # arquivo apontado isoladamente, nem limpar um NFS que tenha sido trocado.
     if [[ -n "${BUILD_WORKSPACE:-}" ]]; then
-        if [[ -n "${NFS_ACTIVE_MOUNTPOINT}" ]] && ! nfs_active_mount_unchanged; then
+        if [[ "${BUILD_DESTINATION_KIND:-}" == ventoy ]] && ! ventoy_mount_unchanged; then
+            ui_warn "Staging Ventoy não removido: identidade do mount mudou ou não pôde ser confirmada."
+        elif [[ -n "${NFS_ACTIVE_MOUNTPOINT}" ]] && ! nfs_active_mount_unchanged; then
             ui_warn "Staging NFS não removido: identidade do mount mudou ou não pôde ser confirmada."
         else
             cleanup_build_workspace "${BUILD_WORKSPACE}" "${OUTPUT_DIR:-}" || {
@@ -116,14 +121,19 @@ trap 'on_signal TERM' TERM
 usage() {
     cat <<'EOF'
 Uso:
-  sudo ./build-image.sh [--nfs-dir DIRETÓRIO]
+  sudo ./build-image.sh [--nfs-dir DIRETÓRIO | --ventoy-dir DIRETÓRIO]
 
-Sem --nfs-dir, NFS_ENABLED=1 monta/reutiliza o NFS de config/image.conf.
+Sem uma opção de destino, NFS_ENABLED=1 monta/reutiliza o NFS de config/image.conf.
 Com NFS_ENABLED=0 (ou ausente), usa NFS_IMAGES_DIR legado ou OUTPUT_DIR local.
 Com --nfs-dir, os archives são gerados diretamente em um staging oculto no
 filesystem NFS informado e a imagem só aparece após validação e rename final.
 Essa opção tem precedência: o diretório deve existir, estar montado e ser
 gravável; o Builder não monta nem desmonta esse destino explícito.
+
+Com --ventoy-dir, os archives são gerados diretamente em um staging oculto
+sob o diretório pmjs-images de uma mídia já montada. A identidade do mount é
+validada durante o build e o NFS configurado não é acessado. Generalização e
+homefs continuam usando apenas LOCAL_TEMP_DIR em filesystem Linux local.
 EOF
 }
 
@@ -140,6 +150,16 @@ parse_build_arguments() {
                 BUILD_NFS_DIR=$2
                 shift 2
                 ;;
+            --ventoy-dir)
+                (( $# >= 2 )) || { ui_error "Valor ausente para --ventoy-dir"; return 1; }
+                [[ -n "$2" ]] || { ui_error "Valor vazio para --ventoy-dir"; return 1; }
+                [[ -z "${BUILD_VENTOY_DIR}" ]] || {
+                    ui_error "--ventoy-dir foi informado mais de uma vez"
+                    return 1
+                }
+                BUILD_VENTOY_DIR=$2
+                shift 2
+                ;;
             --help|-h)
                 usage
                 return 2
@@ -150,6 +170,32 @@ parse_build_arguments() {
                 ;;
         esac
     done
+    [[ -z "${BUILD_NFS_DIR}" || -z "${BUILD_VENTOY_DIR}" ]] || {
+        ui_error "--nfs-dir e --ventoy-dir são mutuamente exclusivos"
+        return 1
+    }
+}
+
+check_active_build_destination() {
+    local phase=$1
+    if [[ "${BUILD_DESTINATION_KIND}" == ventoy ]] && ! ventoy_mount_unchanged; then
+        ui_error "O mount do Ventoy mudou ${phase}; build interrompido"
+        return 1
+    fi
+}
+
+select_build_destination() {
+    if [[ -n "${BUILD_VENTOY_DIR}" ]]; then
+        check_ventoy_dependencies || { ui_error "Build não iniciado."; return 1; }
+        validate_ventoy_destination "${BUILD_VENTOY_DIR}" || {
+            ui_error "Build não iniciado."
+            return 1
+        }
+        BUILD_VENTOY_DIR=${VENTOY_DESTINATION}
+    elif ! select_build_nfs_destination; then
+        ui_error "Build não iniciado."
+        return 1
+    fi
 }
 
 build_rootfs_artifact() {
@@ -280,10 +326,7 @@ main() {
     log_write INFO "Configuração carregada de ${config_file}"
     log_write INFO "Versões independentes: builder=${builder_version} (VERSION), imagem=${IMAGE_VERSION} (config/image.conf)"
 
-    if ! select_build_nfs_destination; then
-        ui_error "Build não iniciado."
-        return 1
-    fi
+    select_build_destination || return 1
 
     if [[ "${SOURCE_ROOT}" == auto ]]; then
         [[ "${HOME_SOURCE}" == auto ]] || {
@@ -303,7 +346,12 @@ main() {
     check_source_root "${SOURCE_ROOT}"
     validate_detected_capture_source "${SOURCE_ROOT}"
     image_directory_name="${IMAGE_NAME}-${IMAGE_VERSION}"
-    if [[ -n "${BUILD_NFS_DIR}" ]]; then
+    if [[ -n "${BUILD_VENTOY_DIR}" ]]; then
+        OUTPUT_DIR=${BUILD_VENTOY_DIR}
+        BUILD_DESTINATION_KIND=ventoy
+        check_active_build_destination "antes da preparação" || return 1
+        check_free_space "${OUTPUT_DIR}" "${MIN_FREE_SPACE_GIB}" || return 1
+    elif [[ -n "${BUILD_NFS_DIR}" ]]; then
         [[ "${BUILD_NFS_DIR}" == /* ]] || {
             ui_error "O destino NFS deve ser um caminho absoluto: ${BUILD_NFS_DIR}"
             return 1
@@ -313,27 +361,28 @@ main() {
             return 1
         }
         BUILD_DESTINATION_KIND=nfs
-        check_nfs_staging_filesystem "${OUTPUT_DIR}"
-        check_free_space "${OUTPUT_DIR}" "${MIN_FREE_SPACE_GIB}"
+        check_nfs_staging_filesystem "${OUTPUT_DIR}" || return 1
+        check_free_space "${OUTPUT_DIR}" "${MIN_FREE_SPACE_GIB}" || return 1
     else
         OUTPUT_DIR="$(resolve_project_path "${PROJECT_DIR}" "${OUTPUT_DIR}")"
-        prepare_directories "${OUTPUT_DIR}" "${LOG_DIR}"
-        check_local_staging_filesystem "${OUTPUT_DIR}"
-        check_free_space "${OUTPUT_DIR}" "${MIN_FREE_SPACE_GIB}"
+        prepare_directories "${OUTPUT_DIR}" "${LOG_DIR}" || return 1
+        check_local_staging_filesystem "${OUTPUT_DIR}" || return 1
+        check_free_space "${OUTPUT_DIR}" "${MIN_FREE_SPACE_GIB}" || return 1
     fi
 
-    prepare_local_temporary_directory "${LOCAL_TEMP_DIR}" LOCAL_TEMP_DIR_RESOLVED
-    estimate_homefs_staging_size_mib "${HOME_SOURCE}" home_staging_estimate_mib
+    prepare_local_temporary_directory "${LOCAL_TEMP_DIR}" LOCAL_TEMP_DIR_RESOLVED || return 1
+    estimate_homefs_staging_size_mib "${HOME_SOURCE}" home_staging_estimate_mib || return 1
     (( home_staging_estimate_mib <= HOMEFS_MAX_SIZE_MIB )) || {
         ui_error "Conteúdo selecionado da home excede HOMEFS_MAX_SIZE_MIB: ${home_staging_estimate_mib} MiB"
         return 1
     }
     local_required_mib=$(( home_staging_estimate_mib + ${LOCAL_TEMP_RESERVE_MIB:-64} ))
-    check_free_space_mib "${LOCAL_TEMP_DIR_RESOLVED}" "${local_required_mib}"
+    check_free_space_mib "${LOCAL_TEMP_DIR_RESOLVED}" "${local_required_mib}" || return 1
     readonly OUTPUT_DIR LOG_DIR LOCAL_TEMP_DIR_RESOLVED
 
+    check_active_build_destination "antes da criação do staging" || return 1
     prepare_build_workspace "${OUTPUT_DIR}" "${image_directory_name}" \
-        BUILD_WORKSPACE LOCAL_IMAGE_DIR
+        BUILD_WORKSPACE LOCAL_IMAGE_DIR || return 1
     BUILD_DIR="${BUILD_WORKSPACE}"
     readonly ROOTFS_FILE="${BUILD_DIR}/${ROOTFS_FILENAME}"
     readonly HOMEFS_FILE="${BUILD_DIR}/${HOMEFS_FILENAME}"
@@ -355,27 +404,32 @@ main() {
     preparation_seconds=$(( SECONDS - START_TIME ))
 
     build_rootfs_artifact "${SOURCE_ROOT}" "${OUTPUT_DIR}" "${ROOTFS_FILE}" \
-        "${IMAGE_COMPRESSION}" "${ZSTD_LEVEL}" "${LOCAL_TEMP_DIR_RESOLVED}"
+        "${IMAGE_COMPRESSION}" "${ZSTD_LEVEL}" "${LOCAL_TEMP_DIR_RESOLVED}" || return 1
+    check_active_build_destination "durante a geração do rootfs" || return 1
 
-    detect_home_identity "${HOME_SOURCE}" "${HOME_USER}" home_uid home_gid
+    detect_home_identity "${HOME_SOURCE}" "${HOME_USER}" home_uid home_gid || return 1
     ui_info "Gerando ${HOMEFS_FILE}"
     build_homefs_artifact "${HOME_SOURCE}" "${HOME_USER}" "${home_uid}" "${home_gid}" \
         "${HOMEFS_MAX_SIZE_MIB}" "${BUILD_DIR}" "${HOMEFS_FILE}" \
-        "${IMAGE_COMPRESSION}" "${ZSTD_LEVEL}" "${LOCAL_TEMP_DIR_RESOLVED}"
+        "${IMAGE_COMPRESSION}" "${ZSTD_LEVEL}" "${LOCAL_TEMP_DIR_RESOLVED}" || return 1
+    check_active_build_destination "durante a geração do homefs" || return 1
 
     metadata_start=${SECONDS}
     build_metadata_artifacts "${BUILD_DIR}" "${ROOTFS_FILE}" "${HOMEFS_FILE}" \
         "${CHECKSUM_FILE}" "${MANIFEST_FILE}" "${IMAGE_NAME}" "${IMAGE_VERSION}" \
-        "${builder_version}" "${IMAGE_COMPRESSION}" "${SOURCE_ROOT}"
+        "${builder_version}" "${IMAGE_COMPRESSION}" "${SOURCE_ROOT}" || return 1
     metadata_seconds=$(( SECONDS - metadata_start ))
 
-    validate_image_directory "${BUILD_DIR}"
+    validate_image_directory "${BUILD_DIR}" || return 1
+    check_active_build_destination "antes da publicação final" || return 1
 
-    cleanup_detected_capture_source
+    cleanup_detected_capture_source || return 1
 
     rootfs_size="$(format_file_size "${ROOTFS_FILE}")"
     homefs_size="$(format_file_size "${HOMEFS_FILE}")"
-    finalize_build_workspace "${BUILD_WORKSPACE}" "${LOCAL_IMAGE_DIR}"
+    check_active_build_destination "imediatamente antes do commit" || return 1
+    finalize_build_workspace "${BUILD_WORKSPACE}" "${LOCAL_IMAGE_DIR}" || return 1
+    check_active_build_destination "durante a publicação final" || return 1
     BUILD_WORKSPACE=""
     elapsed="$(( SECONDS - START_TIME ))"
     BUILD_SUCCEEDED=true

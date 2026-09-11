@@ -69,7 +69,7 @@ destino dos archives, para preservar ownership, ACLs e xattrs. O local é
 configurado por `LOCAL_TEMP_DIR` e seu tamanho máximo continua limitado por
 `HOMEFS_MAX_SIZE_MIB`.
 
-## Build local ou direto no NFS
+## Build local, direto no NFS ou direto no Ventoy
 
 Na configuração distribuída, o build monta automaticamente o servidor oficial:
 
@@ -104,14 +104,18 @@ sudo mount -t nfs 192.168.0.19:/var/clone-pmjs /mnt/pmjs-images
 sudo ./build-image.sh --nfs-dir /mnt/pmjs-images
 ```
 
-A precedência é:
+A seleção do destino é:
 
-1. `--nfs-dir CAMINHO`: usa o NFS já montado, sem automount e sem desmontagem;
+1. `--ventoy-dir CAMINHO`: usa diretamente um `pmjs-images` em mídia já
+   montada, não acessa o NFS configurado e não monta nem desmonta o Ventoy.
+2. `--nfs-dir CAMINHO`: usa o NFS já montado, sem automount e sem desmontagem;
    mantém a validação existente e permite outro export ou subdiretório.
-2. Sem a opção, `NFS_ENABLED=1`: monta/reutiliza o servidor, export e mountpoint
+3. Sem opção explícita, `NFS_ENABLED=1`: monta/reutiliza o servidor, export e mountpoint
    de `config/image.conf`. Nesse modo, `NFS_IMAGES_DIR` não é usado.
-3. `NFS_ENABLED=0` ou ausente: usa `NFS_IMAGES_DIR` legado, se preenchido, ou
+4. `NFS_ENABLED=0` ou ausente: usa `NFS_IMAGES_DIR` legado, se preenchido, ou
    `OUTPUT_DIR` local. Configurações antigas sem os novos campos continuam válidas.
+
+`--ventoy-dir` e `--nfs-dir` são mutuamente exclusivos.
 
 Para build local, configure `NFS_ENABLED=0` e `NFS_IMAGES_DIR=""`.
 O mountpoint automático deve ser absoluto, canônico, específico, sem symlinks,
@@ -134,23 +138,89 @@ Os archives completos não passam por `/var/tmp`. A validação é feita sobre o
 bytes gravados no NFS e o diretório final só aparece após um rename no mesmo
 filesystem.
 
-A publicação é uma operação posterior e explícita. Informe sempre a imagem já
-concluída e um ou ambos os destinos:
+### Build direto no Ventoy sem NFS
+
+Quando o servidor não estiver disponível, monte primeiro a partição de dados do
+Ventoy e crie o diretório `pmjs-images` nela. Depois use a exceção explícita:
+
+```bash
+sudo mkdir -p /media/usuario/Ventoy/pmjs-images
+sudo ./build-image.sh \
+  --ventoy-dir /media/usuario/Ventoy/pmjs-images
+```
+
+O diretório deve existir, ser real, gravável, chamar-se exatamente
+`pmjs-images` e estar em um filesystem montado diferente de `/`. O Builder usa
+`findmnt` para registrar ID, origem, tipo e alvo desse mount. exFAT é aceito,
+mas `OUTPUT_DIR` apontado manualmente para exFAT continua rejeitado: o acesso ao
+Ventoy só é liberado pela opção explícita e validada.
+
+O rootfs é lido de `SOURCE_ROOT` e comprimido diretamente para
+`.pmjs-linux-<versão>.build.*` no Ventoy. O homefs é comprimido da mesma forma
+após materializar sua whitelist em `LOCAL_TEMP_DIR`. O overlay de generalização
+também permanece em `LOCAL_TEMP_DIR`; portanto ownership, modos, ACLs e xattrs
+necessários à preparação nunca dependem do exFAT. Os metadados Unix finais são
+armazenados dentro dos tars.
+
+Após cada archive e antes do commit, a identidade do Ventoy é conferida
+novamente. O bundle é relido do próprio Ventoy e validado integralmente; somente
+então o workspace oculto é sincronizado e renomeado para
+`pmjs-linux-<versão>/`. Uma versão existente nunca é substituída. Em erro ou
+interrupção, o cleanup remove somente o `.build.*` validado e apenas se a mídia
+continuar sendo o mesmo mount. Se a identidade mudar, preserva o path e avisa,
+evitando apagar conteúdo no filesystem que tenha ocupado o mountpoint.
+
+## Copiar uma imagem do NFS para o Ventoy
+
+Para preparar uma imagem offline já publicada no servidor, monte a partição de
+dados do Ventoy e crie nela o diretório `pmjs-images/`. O script monta ou
+reutiliza automaticamente o NFS definido por `NFS_SERVER`, `NFS_EXPORT` e
+`NFS_MOUNTPOINT` em `config/image.conf`:
+
+```bash
+sudo ./sync-image-to-ventoy.sh \
+  --image pmjs-linux-0.2.0 \
+  --ventoy-dir /media/usuario/Ventoy/pmjs-images
+```
+
+`--image` aceita somente o nome de uma versão final sob a raiz do NFS; paths,
+nomes ocultos e nomes de staging são rejeitados. Antes de copiar, o script
+valida o bundle schema 1 completo no servidor, incluindo os archives Zstandard,
+`SHA256SUMS`, hashes do manifest e identidade do diretório. O diretório Ventoy
+deve existir, ser gravável, chamar-se exatamente `pmjs-images` e pertencer a um
+filesystem montado diferente de `/`. exFAT é aceito.
+
+O espaço exigido é a soma dos quatro arquivos mais
+`VENTOY_FREE_SPACE_MARGIN_MIB` (64 MiB por padrão). A cópia usa
+`rsync --info=progress2` sem tentar preservar ownership, ACLs ou xattrs do arquivo
+externo; esses metadados já estão serializados dentro dos tars. Os arquivos são
+gravados em `.pmjs-linux-<versão>.sync.XXXXXX`, no próprio Ventoy, e todo o
+bundle é relido e validado ali. Somente então um rename no mesmo filesystem cria
+o diretório final. Uma versão existente nunca é substituída.
+
+O script registra as identidades dos mounts NFS e Ventoy. Em erro, `SIGINT` ou
+`SIGTERM`, remove somente o staging `.sync.*` criado pela execução e apenas se o
+Ventoy ainda for o mesmo mount. O NFS é desmontado no cleanup somente quando o
+próprio script o montou; mounts previamente existentes permanecem montados.
+Uma troca ou perda de identidade faz o cleanup preservar o path e emitir aviso.
+
+Para copiar uma imagem já concluída em outro destino, a publicação genérica é
+uma operação posterior e explícita. Informe a imagem e um ou ambos os destinos:
 
 ```bash
 # Diretório offline existente na partição de dados montada do Ventoy
 ./publish-image.sh \
-  --image-dir ./output/pmjs-linux-0.1.0 \
+  --image-dir ./output/pmjs-linux-0.2.0 \
   --ventoy-dir /media/operador/Ventoy/pmjs-images
 
 # Diretório existente dentro de um export NFS já montado
 ./publish-image.sh \
-  --image-dir ./output/pmjs-linux-0.1.0 \
+  --image-dir ./output/pmjs-linux-0.2.0 \
   --nfs-dir /mnt/pmjs-images
 
 # Preparar e publicar nos dois destinos
 ./publish-image.sh \
-  --image-dir ./output/pmjs-linux-0.1.0 \
+  --image-dir ./output/pmjs-linux-0.2.0 \
   --ventoy-dir /media/operador/Ventoy/pmjs-images \
   --nfs-dir /mnt/pmjs-images
 ```
@@ -165,17 +235,19 @@ A atomicidade é por destino; não existe transação atômica entre Ventoy e NF
 ## Requisitos
 
 - Linux e Bash 4.3 ou superior
-- execução do `build-image.sh` como `root`; o publisher requer apenas acesso de escrita
+- execução de `build-image.sh` e `sync-image-to-ventoy.sh` como `root`; o
+  publisher genérico requer apenas acesso de escrita
 - GNU tar com suporte a ACLs e atributos estendidos
 - para automount NFS: `mount`, `umount`, `findmnt` (util-linux) e `mount.nfs`
   (cliente `nfs-common` no Debian/PMJS Live), verificados antes da montagem;
-  `--nfs-dir` e `NFS_IMAGES_DIR` legado exigem `findmnt` e um NFS já montado
+  `--nfs-dir` e `NFS_IMAGES_DIR` legado exigem `findmnt` e um NFS já montado;
+  `--ventoy-dir` exige `findmnt` e o Ventoy já montado
 - gzip (compatibilidade interna) e zstd
 - rsync com suporte a ACLs e atributos estendidos
 - Python 3 (serialização e validação robusta do manifest JSON)
 - sha256sum
-- `OUTPUT_DIR` em filesystem Linux local, ou `--nfs-dir`/`NFS_IMAGES_DIR` em NFS
-  montado;
+- `OUTPUT_DIR` em filesystem Linux local, `--nfs-dir`/`NFS_IMAGES_DIR` em NFS
+  montado, ou `--ventoy-dir` apontando para um `pmjs-images` montado;
 - ao menos `MIN_FREE_SPACE_GIB` livres no destino dos archives;
 - em `LOCAL_TEMP_DIR`, apenas a estimativa do conteúdo selecionado da home mais
   `LOCAL_TEMP_RESERVE_MIB`; `HOMEFS_MAX_SIZE_MIB` continua sendo o teto.
@@ -266,6 +338,15 @@ NFS. Cobre montagem/reutilização, origem ou filesystem errado, falhas de mount
 e confirmação, paths perigosos, dependências, precedência, abortar o main antes
 da captura e cleanup após sucesso, erro, interrupção ou substituição do mount.
 Não monta servidor NFS real.
+`test_sync_image_to_ventoy.sh` cobre o fluxo NFS → Ventoy com mounts simulados:
+bundle válido ou inválido, SHA256 incorreto, espaço insuficiente, imutabilidade,
+interrupção, corrupção durante a cópia, falha de mount, mídia ausente, cleanup
+seguro e ausência do diretório final antes da validação completa.
+`test_ventoy_build.sh` cobre o build direto em Ventoy simulado: seleção sem NFS,
+rejeição do filesystem raiz, staging Linux separado, generalização SSH,
+preservação de UID/GID, modo, ACL, xattr e symlink, imutabilidade, rejeição de
+corrupção, commit atômico e cleanup condicionado à identidade do mount. Nenhuma
+mídia real é acessada.
 
 ## Integração com o Deploy
 

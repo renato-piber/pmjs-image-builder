@@ -20,11 +20,12 @@ completa testa os dois fluxos Zstandard, lista os dois tars, verifica
 
 ## Pipeline
 
-Antes de detectar a origem ou criar o workspace, `lib/nfs.sh` seleciona o
-destino: `--nfs-dir` tem precedência; sem ele, `NFS_ENABLED=1` ativa o automount
-configurado. Com `NFS_ENABLED=0` ou ausente, mantém-se `NFS_IMAGES_DIR` legado ou
-`OUTPUT_DIR` local. O automount não modifica nenhuma etapa de geração, schema,
-generalização, hash, validação ou rename final abaixo.
+Antes de detectar a origem ou criar o workspace, o Builder seleciona o destino.
+`--ventoy-dir` escolhe uma mídia já montada e ignora completamente o NFS;
+`--nfs-dir` escolhe um NFS já montado. As duas opções são mutuamente exclusivas.
+Sem opção explícita, `NFS_ENABLED=1` ativa o automount configurado. Com
+`NFS_ENABLED=0` ou ausente, mantém-se `NFS_IMAGES_DIR` legado ou `OUTPUT_DIR`
+local. A seleção não modifica schema, generalização, hash ou validação.
 
 O automount consulta `findmnt --mountpoint` (mount exato), verifica tipo NFS/NFS4
 e origem configurada, ou executa `mount -t nfs` e exige a mesma confirmação.
@@ -45,7 +46,7 @@ origem montada/auto-detectada
           |    - home filtrada (limitada por HOMEFS_MAX_SIZE_MIB)
           |
           v
-DESTINO/.pmjs-linux-<versão>.build.*      (OUTPUT_DIR local ou NFS)
+DESTINO/.pmjs-linux-<versão>.build.*      (OUTPUT_DIR local, NFS ou Ventoy)
           |  SOURCE_ROOT -> tar -> zstd -> rootfs.tar.zst.partial
           |  home staging -> tar -> zstd -> homefs.tar.zst.partial
           |  renomeia cada archive dentro do staging
@@ -62,14 +63,42 @@ destino/.pmjs-linux-<versão>.partial.*    (cópia no filesystem do destino)
 destino/pmjs-linux-<versão>               (rename atômico por destino)
 ```
 
-O build nunca escreve diretamente no Ventoy/exFAT. Para NFS, os archives podem
-ser produzidos diretamente no staging oculto porque tar é um formato de fluxo:
+O fluxo offline dedicado é separado do build e do publisher genérico:
+
+```text
+NFS/pmjs-linux-<versão>                   (bundle final validado)
+          |
+          | rsync com progresso; arquivos externos não exigem metadados Unix
+          v
+VENTOY/pmjs-images/.pmjs-linux-<versão>.sync.*
+          | valida zstd + tar + SHA256SUMS + manifest nos bytes do Ventoy
+          v
+VENTOY/pmjs-images/pmjs-linux-<versão>    (rename atômico e imutável)
+```
+
+`sync-image-to-ventoy.sh` usa a configuração NFS existente e reutiliza o mesmo
+automount seguro. Antes de criar staging, registra ID, origem, tipo e alvo do
+filesystem que contém `pmjs-images/`, rejeitando o filesystem raiz. A identidade
+é conferida novamente após a cópia, antes do rename e antes de qualquer cleanup.
+O staging só é removido quando pertence diretamente ao destino validado, segue
+o padrão exato `.sync.*`, é um diretório real e o mount continua sendo o mesmo.
+O uso de `find -P -depth -delete` fica limitado a esse staging. O espaço livre
+deve cobrir o bundle completo e a margem configurada.
+
+No modo explícito `--ventoy-dir`, o build pode escrever os archives diretamente
+no Ventoy/exFAT. Assim como no NFS, isso é seguro porque tar é um formato de fluxo:
 UID/GID, modos, ACLs, xattrs e symlinks são serializados pelo GNU tar a partir da
 origem, independentemente do filesystem que armazena o arquivo `.tar.zst`. O NFS
-armazena somente o fluxo comprimido e os metadados do contrato.
+ou o Ventoy armazena somente o fluxo comprimido e os metadados do contrato.
+
+O modo Ventoy exige um diretório explícito chamado `pmjs-images` em mount
+diferente de `/`, registra ID, origem, tipo e alvo com `findmnt` e confere essa
+identidade após cada archive e antes/depois do commit. O cleanup só remove seu
+`.build.*` quando a mesma identidade ainda está ativa. O Ventoy não é montado ou
+desmontado pelo Builder e a configuração NFS não é consultada nesse modo.
 
 O nome final permanece ausente durante toda a geração. A validação relê os bytes
-no NFS e o commit usa rename no mesmo filesystem. Se o processo cair, pode restar
+no destino e o commit usa rename no mesmo filesystem. Se o processo cair, pode restar
 no máximo um diretório oculto `.build.*`; consumidores que procuram
 `pmjs-linux-*` não o tratam como imagem. `OUTPUT_DIR` inteiro é excluído do
 rootfs, inclusive builds anteriores.
