@@ -24,7 +24,7 @@ class ImageNamingTests(unittest.TestCase):
         self.assertEqual((ROOT / "VERSION").read_bytes(), self.original_version)
 
     def run_selection(self, data=b"\n", *, terminal=True, name="pmjs-linux", body="",
-                      main=False, copy_prompt=False, setup=""):
+                      main=False, copy_prompt=False, setup="", automount=False):
         script = '''source "$1/build-image.sh"
 trap - EXIT ERR INT TERM
 log_write() { :; }
@@ -50,7 +50,14 @@ findmnt() {
 '''
         script += setup + "\n"
         if main:
-            script += '''check_root() { :; }
+            script += f'PMJS_TEST_AUTOMOUNT={1 if automount else 0}\n'
+            script += '''eval "$(declare -f validate_config | sed '1s/validate_config/validate_config_original/')"
+validate_config() {
+    validate_config_original "$@" || return 1
+    # As perguntas manuais continuam testando compatibilidade com config antigo.
+    VENTOY_AUTOMOUNT_ENABLED=$PMJS_TEST_AUTOMOUNT
+}
+check_root() { :; }
 check_dependencies() { :; }
 resolve_project_path() { printf '%s/logs\\n' "$PMJS_NAME_TEST_DIR"; }
 init_log() { :; }
@@ -164,6 +171,17 @@ printf 'COPY_DEST=%s\\n' "$BUILD_ALSO_VENTOY_DIR"
         destination = self.ventoy_fixture()
         out, _ = self.run_selection(f"sim\n{destination}\n".encode(), copy_prompt=True)
         self.assertIn(f"COPY_DEST={destination}\n", out)
+
+    def test_launcher_automount_enabled_skips_path_prompt(self):
+        out, err = self.run_selection(b"\n", copy_prompt=True, setup="VENTOY_AUTOMOUNT_ENABLED=1")
+        self.assertIn("COPY_DEST=auto\n", out)
+        self.assertNotIn("Diretório pmjs-images do Ventoy", err)
+        self.assertEqual(list(self.directory.iterdir()), [])
+
+    def test_main_launcher_automount_passes_auto_to_preflight(self):
+        out, err = self.run_selection(b"0.8.0\n\n", main=True, automount=True)
+        self.assertIn("DUAL_REACHED=auto\n", out)
+        self.assertNotIn("Diretório pmjs-images do Ventoy", err)
 
     def test_launcher_media_changed_after_selection_rejected_before_build(self):
         destination = self.ventoy_fixture()

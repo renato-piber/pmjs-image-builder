@@ -134,6 +134,7 @@ A seleção do destino é:
 
 1. `--ventoy-dir CAMINHO`: usa diretamente um `pmjs-images` em mídia já
    montada, não acessa o NFS configurado e não monta nem desmonta o Ventoy.
+   Com `--ventoy-dir auto`, descobre/monta a mídia offline configurada, sem NFS.
 2. `--nfs-dir CAMINHO`: usa o NFS já montado, sem automount e sem desmontagem;
    mantém a validação existente e permite outro export ou subdiretório.
 3. Sem opção explícita, `NFS_ENABLED=1`: monta/reutiliza o servidor, export e mountpoint
@@ -166,8 +167,14 @@ filesystem.
 
 ### Build direto no Ventoy sem NFS
 
-Quando o servidor não estiver disponível, monte primeiro a partição de dados do
-Ventoy e crie o diretório `pmjs-images` nela. Depois use a exceção explícita:
+Quando o servidor não estiver disponível, use a exceção explícita com descoberta:
+
+```bash
+sudo ./build-image.sh --ventoy-dir auto
+```
+
+Ou mantenha o caminho manual: monte primeiro a partição de dados do Ventoy e
+crie o diretório `pmjs-images` nela. Depois use:
 
 ```bash
 sudo mkdir -p /media/usuario/Ventoy/pmjs-images
@@ -198,31 +205,96 @@ evitando apagar conteúdo no filesystem que tenha ocupado o mountpoint.
 
 ## Copiar uma imagem do NFS para o Ventoy
 
+### Descoberta e automount do Ventoy
+
+`config/image.conf` declara explicitamente os padrões alinhados ao Deploy:
+
+```bash
+VENTOY_AUTOMOUNT_ENABLED=1
+VENTOY_MOUNTPOINT="/mnt/pmjs-offline"
+VENTOY_VOLUME_LABEL="Ventoy"
+VENTOY_ALLOWED_FSTYPES="exfat"
+```
+
+O mountpoint não é um dispositivo: a partição é descoberta por LABEL, filesystem
+permitido e transporte USB (incluindo o transporte do disco pai). Só uma
+partição pode se qualificar; nenhuma ou várias abortam sem montar/gravar.
+Não há `/dev/sdX` fixo. O subdiretório de bundles é sempre `pmjs-images`, na
+raiz do volume, exatamente onde o Deploy procura. Mudar label/filesystem no
+Builder requer manter a configuração do consumidor compatível; o Deploy não é
+alterado pelo Builder.
+
+Se houver um único mount correto gravável, reutiliza-o, inclusive em
+`/media/usuario/Ventoy`, e nunca o desmonta. Um mount somente leitura (como o
+criado pelo Deploy) é rejeitado, sem remount e sem uma segunda montagem. Encerre
+o Deploy/uso desse mount antes de tentar novamente. Uma mídia exFAT vazia é
+aceita; não precisa conter uma versão anterior para ser identificada.
+
+Se não estiver montado, prefere o mapper `/dev/mapper/<nome da partição>`, como
+no Deploy. Na Live iniciada pelo Ventoy (`/run/live/medium` vindo de
+`/dev/mapper/ventoy`), um mapper ausente aciona `udevadm trigger`/`settle` uma
+única vez; se continuar ausente, aborta, sem montar a partição física. Fora
+desse boot, usa a partição física caso não exista mapper. O mapper também deve
+ter label e filesystem compatíveis.
+
+O mountpoint deve ser específico, absoluto e canônico; caminhos amplos, de
+sistema ou symlinks são rejeitados. Não encobre mounts ocupados nem diretórios
+com arquivos locais. Executa `mount -t <filesystem> -o rw,nosuid,nodev` e exige
+confirmação via `findmnt` de origem, tipo, ID e opção `rw`. Só depois cria
+`pmjs-images`, se necessário. Mount falho ou não confirmado nunca causa build
+ou cópia no diretório local sob o mountpoint.
+
+O cleanup primeiro remove apenas seus stagings validados e depois desmonta
+apenas o mount que o Builder criou (`VENTOY_MOUNTED_BY_BUILDER`). Reconfirma
+origem, tipo e ID; se mudarem ou não puderem ser confirmados, não apaga staging
+nem desmonta uma mídia incerta. Falha de umount gera aviso, sem mascarar o erro
+principal. Não há remount, umount forçado/lazy ou remoção da pasta pmjs-images,
+do mountpoint ou de versões finais. INT/TERM durante mount são adiados até
+registrar a identidade e executar cleanup seguro. SIGKILL/desligamento abrupto
+não permitem cleanup; o mount pode permanecer e será pré-existente na próxima
+execução. Um mount não confirmado pode ser preservado com warning para inspeção.
+
+`auto` funciona em `build-image.sh --also-ventoy-dir auto`,
+`build-image.sh --ventoy-dir auto` e
+`sync-image-to-ventoy.sh --image NOME --ventoy-dir auto`.
+Paths explícitos continuam tendo precedência e não acionam discovery/mount,
+mesmo com configuração automática habilitada. Configuração antiga com
+`VENTOY_AUTOMOUNT_ENABLED` ausente mantém a pergunta manual; `0` também mantém
+essa pergunta. `auto` explícito ainda exige os três parâmetros de descoberta.
+
 ### Gerar no NFS e copiar automaticamente na mesma execução
 
 Ao clicar no lançador **PMJS Image Builder** da Live, o terminal chama
 `build-image.sh` sem argumentos. Com NFS configurado, depois de escolher a versão
-aparecem as perguntas:
+aparece a pergunta:
 
 ```text
 Copiar também para o Ventoy após publicar no NFS? [S/n]:
-Diretório pmjs-images do Ventoy:
 ```
 
-Enter na primeira pergunta seleciona **Sim**. Na segunda, informe por exemplo
-`/media/usuario/Ventoy/pmjs-images` (a pasta deve existir na mídia montada).
-O caminho não é descoberto/assumido silenciosamente, nem criado automaticamente.
-O preflight mantém e reconfirma a identidade da mídia selecionada, rejeitando
-uma troca de mount no mesmo caminho entre a pergunta e o início do build.
-Paths inválidos ou uma mídia desmontada repetem a pergunta; EOF/Ctrl+D cancela
-antes de montar NFS ou iniciar captura. Responder `n` mantém somente o NFS.
+Enter seleciona **Sim**. Com `VENTOY_AUTOMOUNT_ENABLED=1`, o preflight monta ou
+reutiliza o Ventoy automaticamente conforme a configuração acima, mostra o
+destino confirmado e cria `pmjs-images` apenas na mídia validada. Não pede o
+caminho. Responder `n` mantém somente o NFS. EOF/Ctrl+D cancela a pergunta antes
+de qualquer mount/captura. Nenhum mount real é feito apenas para perguntar.
+
+Com automount `0`/ausente, a próxima pergunta continua sendo
+`Diretório pmjs-images do Ventoy:`. Informe por exemplo
+`/media/usuario/Ventoy/pmjs-images` (pasta existente na mídia montada). Nesse
+modo não cria caminhos nem monta mídia; entradas inválidas repetem a pergunta.
+O preflight mantém a identidade confirmada durante a pergunta manual.
 O lançador/wrapper existente já é compatível; não precisa de argumentos novos.
 Para disponibilizar esse fluxo na ISO, atualize os snapshots com
 `pmjs-live-builder/tools/update-pmjs-snapshots.sh` antes da próxima build da Live.
 Uma ISO existente mantém o snapshot antigo até ser atualizada/recriada.
 
-Para terminar com o mesmo bundle no servidor e na mídia, informe explicitamente
-o destino offline (a mídia já deve estar montada e `pmjs-images/` deve existir):
+Para o mesmo fluxo por comando, sem perguntar o destino:
+
+```bash
+sudo ./build-image.sh --also-ventoy-dir auto
+```
+
+Ou informe o caminho offline explícito (mídia já montada e pasta existente):
 
 ```bash
 sudo ./build-image.sh \
@@ -256,7 +328,7 @@ O cleanup remove somente seu `.sync.*` validado (se o mount Ventoy não mudou) e
 nunca remove a imagem final do NFS nem versões offline anteriores. A identidade
 do NFS também é conferida ao longo do build/cópia, inclusive com `--nfs-dir`.
 Mounts automáticos pertencentes ao Builder são desmontados somente no cleanup,
-depois da cópia; mounts NFS pré-existentes e o Ventoy não são desmontados.
+depois da cópia; mounts NFS/Ventoy pré-existentes não são desmontados.
 
 Para repetir só a cópia do servidor oficial, sem refazer uma versão imutável:
 
@@ -342,6 +414,9 @@ A atomicidade é por destino; não existe transação atômica entre Ventoy e NF
   (cliente `nfs-common` no Debian/PMJS Live), verificados antes da montagem;
   `--nfs-dir` e `NFS_IMAGES_DIR` legado exigem `findmnt` e um NFS já montado;
   `--ventoy-dir` exige `findmnt` e o Ventoy já montado
+- para Ventoy `auto`: `lsblk`, `blkid`, `mount`, `umount`, `findmnt`, Python 3 e
+  suporte do kernel ao filesystem configurado (exFAT na PMJS Live); `udevadm`
+  é necessário somente se faltar o mapper durante um boot Ventoy
 - gzip (compatibilidade interna) e zstd
 - rsync com suporte a ACLs e atributos estendidos
 - Python 3 (serialização e validação robusta do manifest JSON)
@@ -436,6 +511,13 @@ e no manifest schema 1, independência de `VERSION` e versões imutáveis.
 Também cobre o fluxo do lançador: cópia padrão Sim, somente NFS, path explícito
 com espaços, mídia desmontada, cancelamento nas perguntas, precedência das
 opções, configuração legada e omissão em build local/direto ou sem terminal.
+Também confirma que automount habilitado pula a pergunta de caminho e encaminha
+`auto` ao preflight, sem montar durante as perguntas.
+`test_ventoy_automount.sh` simula dispositivos, udev e findmnt/mount/umount:
+30 cenários de mídia ausente/ambígua/interna, fallback blkid, mapper/USB/NVMe,
+reutilização rw, recusa ro, mount ocupado/local não vazio, falhas pós-mount,
+interrupção durante mount, cleanup após erro/troca de ID e warning de umount.
+Valida paths perigosos/symlinks e paths escapados com espaços/UTF-8.
 `test_dual_destination.sh` executa o main com árvores sintéticas e mounts
 simulados: NFS automático/pré-existente/explícito, mesmo bundle nos dois locais,
 uma única geração, falhas de rootfs/homefs/SHA256/mount/cópia, falta de espaço,

@@ -104,6 +104,7 @@ cleanup() {
     if [[ -n "${SOURCE_DETECT_DIR:-}" ]]; then
         cleanup_detected_capture_source || exit_code=1
     fi
+    cleanup_ventoy_mount
     cleanup_nfs_mount
 
     if [[ ${exit_code} -ne 0 && "${BUILD_SUCCEEDED}" == true &&
@@ -132,6 +133,10 @@ on_signal() {
         NFS_PENDING_SIGNAL=${signal}
         return 0
     fi
+    if [[ "${VENTOY_MOUNT_IN_PROGRESS}" == 1 ]]; then
+        VENTOY_PENDING_SIGNAL=${signal}
+        return 0
+    fi
     log_write WARN "Sinal ${signal} recebido; interrompendo o build."
     [[ "${signal}" == INT ]] && exit 130
     exit 143
@@ -152,8 +157,10 @@ Em terminal interativo, pergunta o sufixo/versão da nova imagem antes de montar
 destinos ou capturar arquivos. Aceita '0.3.0' ou 'pmjs-linux-0.3.0' (com o prefixo
 IMAGE_NAME configurado); Enter mantém o padrão de config/image.conf.
 Sem terminal interativo, mantém nome/versão da configuração, sem ler stdin.
-Em terminal e com destino NFS, também oferece a cópia para o Ventoy [S/n] e
-pede o caminho explícito de pmjs-images. O lançador da Live usa esse fluxo.
+Em terminal e com destino NFS, também oferece a cópia para o Ventoy [S/n].
+VENTOY_AUTOMOUNT_ENABLED=1 detecta/monta a mídia configurada automaticamente;
+com 0/ausente pede o caminho manual. O lançador da Live usa esse fluxo.
+--also-ventoy-dir auto e --ventoy-dir auto habilitam descoberta explicitamente.
 
 Com --also-ventoy-dir, exige build NFS (automático ou --nfs-dir) e depois copia
 o bundle final para o pmjs-images informado. NFS e Ventoy são validados e
@@ -224,6 +231,14 @@ select_interactive_ventoy_copy() {
             *) ui_error "Responda S para NFS + Ventoy ou N para somente NFS." ;;
         esac
     done
+    case "${VENTOY_AUTOMOUNT_ENABLED:-0}" in
+        1)
+            BUILD_ALSO_VENTOY_DIR=auto
+            ui_info "Destinos selecionados: NFS + Ventoy automático (config/image.conf)"
+            return 0 ;;
+        0) : ;;
+        *) ui_error "VENTOY_AUTOMOUNT_ENABLED deve ser 0 ou 1"; return 1 ;;
+    esac
     check_ventoy_dependencies || return 1
     ui_info "Informe a pasta pmjs-images da mídia Ventoy já montada; nenhum caminho será presumido."
     while true; do
@@ -337,7 +352,9 @@ prepare_build_ventoy_copy() {
     BUILD_VENTOY_COPY_IMAGE="${IMAGE_NAME}-${IMAGE_VERSION}"
     validate_sync_image_name "${BUILD_VENTOY_COPY_IMAGE}" "${IMAGE_NAME}" || return 1
     check_ventoy_dependencies || return 1
-    if [[ "${BUILD_VENTOY_COPY_SELECTED_INTERACTIVELY}" == true ]]; then
+    if [[ "${BUILD_ALSO_VENTOY_DIR}" == auto ]]; then
+        prepare_ventoy_automount || return 1
+    elif [[ "${BUILD_VENTOY_COPY_SELECTED_INTERACTIVELY}" == true ]]; then
         # Manter a identidade confirmada durante a pergunta, sem substituí-la
         # por outra mídia que apareceu no mesmo caminho durante o mount NFS.
         [[ "${BUILD_ALSO_VENTOY_DIR}" == "${VENTOY_DESTINATION}" &&
@@ -413,10 +430,12 @@ check_active_build_destination() {
 select_build_destination() {
     if [[ -n "${BUILD_VENTOY_DIR}" ]]; then
         check_ventoy_dependencies || { ui_error "Build não iniciado."; return 1; }
-        validate_ventoy_destination "${BUILD_VENTOY_DIR}" || {
+        if [[ "${BUILD_VENTOY_DIR}" == auto ]]; then
+            prepare_ventoy_automount || { ui_error "Build não iniciado."; return 1; }
+        elif ! validate_ventoy_destination "${BUILD_VENTOY_DIR}"; then
             ui_error "Build não iniciado."
             return 1
-        }
+        fi
         BUILD_VENTOY_DIR=${VENTOY_DESTINATION}
     elif ! select_build_nfs_destination; then
         ui_error "Build não iniciado."
