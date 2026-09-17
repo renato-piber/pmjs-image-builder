@@ -21,14 +21,40 @@ builder, compressão, arquitetura, distribuição, kernel do builder e, para cad
 archive, nome, tamanho e SHA-256. Ele não contém identidades da máquina-modelo.
 
 `VERSION` identifica a versão do software PMJS Image Builder e é gravado em
-`builder_version` no manifest. `IMAGE_VERSION`, carregado exclusivamente de
-`config/image.conf`, identifica a imagem produzida e determina o nome
-`pmjs-linux-<versão>/`. Os dois valores são independentes e não precisam ser
-iguais.
-No início do build, o log registra os dois valores e os respectivos arquivos de
-origem. Assim, o nome `.pmjs-linux-0.1.0.build.*` indica necessariamente que a
-cópia executada carregou `IMAGE_VERSION=0.1.0` do seu próprio
-`config/image.conf`; a opção `--nfs-dir` não altera a versão.
+`builder_version` no manifest. `IMAGE_VERSION` identifica a imagem produzida e
+determina o nome `<IMAGE_NAME>-<IMAGE_VERSION>/`. Seu padrão vem de
+`config/image.conf`; os dois valores são independentes e não precisam ser iguais.
+No início do build, o log registra as versões e a origem efetiva da escolha
+(configuração ou pergunta interativa). A opção `--nfs-dir` não altera a versão.
+
+## Escolher o nome da nova imagem
+
+Ao executar `build-image.sh` em terminal interativo, antes de qualquer mount,
+staging ou captura, aparece a pergunta (com os padrões atuais):
+
+```text
+[INFO] Nome da nova imagem: pmjs-linux-<versão/sufixo>
+Versão/sufixo ou nome completo [pmjs-linux-0.2.0]:
+```
+
+Digite `0.3.0` ou `pmjs-linux-0.3.0` para gerar `pmjs-linux-0.3.0/`. Também são
+aceitos sufixos como `0.3.0-lab`. Enter mantém o padrão. O prefixo é sempre
+`IMAGE_NAME` de `config/image.conf`, inclusive quando for diferente de
+`pmjs-linux`. Espaços, separadores de paths e sufixos iniciados por ponto ou hífen
+são rejeitados; a pergunta é repetida. EOF (Ctrl+D) cancela antes de iniciar o
+build. Ctrl+C interrompe usando o cleanup existente.
+
+A escolha altera apenas a execução atual: não grava `config/image.conf` nem
+`VERSION`. O staging, a pasta final e o manifest recebem a mesma versão
+selecionada. Se a pasta final já existir, o build aborta, sem sobrescrever.
+Não é possível renomear uma captura em andamento por essa pergunta.
+
+Sem stdin ligado a um terminal, a pergunta é omitida e o script usa a
+configuração, sem consumir dados de pipes/redirecionamentos. O comportamento é
+igual nos destinos local, NFS e Ventoy; nenhuma captura ou publicação é
+realizada apenas por responder à pergunta.
+
+## Compressão e generalização
 
 Zstandard nível 3 é o padrão por priorizar instalação e descompressão rápidas:
 
@@ -171,6 +197,80 @@ continuar sendo o mesmo mount. Se a identidade mudar, preserva o path e avisa,
 evitando apagar conteúdo no filesystem que tenha ocupado o mountpoint.
 
 ## Copiar uma imagem do NFS para o Ventoy
+
+### Gerar no NFS e copiar automaticamente na mesma execução
+
+Ao clicar no lançador **PMJS Image Builder** da Live, o terminal chama
+`build-image.sh` sem argumentos. Com NFS configurado, depois de escolher a versão
+aparecem as perguntas:
+
+```text
+Copiar também para o Ventoy após publicar no NFS? [S/n]:
+Diretório pmjs-images do Ventoy:
+```
+
+Enter na primeira pergunta seleciona **Sim**. Na segunda, informe por exemplo
+`/media/usuario/Ventoy/pmjs-images` (a pasta deve existir na mídia montada).
+O caminho não é descoberto/assumido silenciosamente, nem criado automaticamente.
+O preflight mantém e reconfirma a identidade da mídia selecionada, rejeitando
+uma troca de mount no mesmo caminho entre a pergunta e o início do build.
+Paths inválidos ou uma mídia desmontada repetem a pergunta; EOF/Ctrl+D cancela
+antes de montar NFS ou iniciar captura. Responder `n` mantém somente o NFS.
+O lançador/wrapper existente já é compatível; não precisa de argumentos novos.
+Para disponibilizar esse fluxo na ISO, atualize os snapshots com
+`pmjs-live-builder/tools/update-pmjs-snapshots.sh` antes da próxima build da Live.
+Uma ISO existente mantém o snapshot antigo até ser atualizada/recriada.
+
+Para terminar com o mesmo bundle no servidor e na mídia, informe explicitamente
+o destino offline (a mídia já deve estar montada e `pmjs-images/` deve existir):
+
+```bash
+sudo ./build-image.sh \
+  --also-ventoy-dir /media/usuario/Ventoy/pmjs-images
+```
+
+Usa o NFS automático de `config/image.conf`. Também aceita
+`--nfs-dir /mnt/clone-pmjs --also-ventoy-dir /media/usuario/Ventoy/pmjs-images`
+para um NFS já montado, inclusive outro export/subdiretório. A pergunta inicial
+define a identidade única usada nos dois destinos. `--also-ventoy-dir` pula a
+pergunta sobre cópia/caminho e usa o destino explícito. Sem terminal interativo,
+nenhuma pergunta é feita e a cópia dupla continua exigindo essa opção.
+Build local e `--ventoy-dir` também omitem a pergunta de cópia para não mudar
+seu destino. Não combinar com `--ventoy-dir`: essa opção
+continua sendo o build direto no Ventoy, sem NFS. Se a seleção produzir somente
+OUTPUT_DIR local, a opção dupla aborta antes da captura.
+
+Fluxo: preparar/validar destinos → gerar em staging NFS → validar e publicar no
+NFS → revalidar bundle final → copiar para staging Ventoy → recalcular hashes e
+validar a cópia → publicar no Ventoy. A mídia offline deve estar em um mount
+separado, não em NFS. O preflight rejeita uma versão offline já existente e
+confere a margem livre; assim que o tamanho real estiver disponível, exige a
+soma dos quatro arquivos + `VENTOY_FREE_SPACE_MARGIN_MIB`. Confere novamente a
+existência da versão antes da cópia e do rename, evitando sobrescrita por corrida.
+
+**Não é uma transação atômica entre dois filesystems.** Cada publicação é atômica
+individualmente e a cópia é sequencial, não uma segunda captura. Se o build NFS
+falhar, não copia para o Ventoy. Se a cópia falhar ou for interrompida, o comando
+retorna erro, informa o sucesso parcial e preserva a versão final válida no NFS.
+O cleanup remove somente seu `.sync.*` validado (se o mount Ventoy não mudou) e
+nunca remove a imagem final do NFS nem versões offline anteriores. A identidade
+do NFS também é conferida ao longo do build/cópia, inclusive com `--nfs-dir`.
+Mounts automáticos pertencentes ao Builder são desmontados somente no cleanup,
+depois da cópia; mounts NFS pré-existentes e o Ventoy não são desmontados.
+
+Para repetir só a cópia do servidor oficial, sem refazer uma versão imutável:
+
+```bash
+sudo ./sync-image-to-ventoy.sh \
+  --image pmjs-linux-0.3.0 \
+  --ventoy-dir /media/usuario/Ventoy/pmjs-images
+```
+
+Esse sincronizador usa o NFS de `config/image.conf`; se o build usou outro export
+ou subdiretório explícito, configure o sincronizador para a mesma raiz antes de
+repetir a cópia. Não são assumidos silenciosamente paths da mídia.
+
+### Copiar uma versão já publicada
 
 Para preparar uma imagem offline já publicada no servidor, monte a partição de
 dados do Ventoy e crie nela o diretório `pmjs-images/`. O script monta ou
@@ -328,6 +428,20 @@ Os testes não capturam o sistema real e usam árvores temporárias sintéticas:
 ```bash
 ./tests/run.sh
 ```
+
+`test_image_naming.sh` usa pseudo-terminais para a pergunta real: padrão por
+Enter, sufixo/nome completo, prefixo configurado, rejeição de paths inseguros,
+cancelamento antes dos destinos, pipes sem consumo de stdin, versão no staging
+e no manifest schema 1, independência de `VERSION` e versões imutáveis.
+Também cobre o fluxo do lançador: cópia padrão Sim, somente NFS, path explícito
+com espaços, mídia desmontada, cancelamento nas perguntas, precedência das
+opções, configuração legada e omissão em build local/direto ou sem terminal.
+`test_dual_destination.sh` executa o main com árvores sintéticas e mounts
+simulados: NFS automático/pré-existente/explícito, mesmo bundle nos dois locais,
+uma única geração, falhas de rootfs/homefs/SHA256/mount/cópia, falta de espaço,
+interrupções antes do commit NFS e durante a cópia, corrupção, versões imutáveis,
+corrida de destino, mudanças de mounts e cleanup sem apagar versões finais ou
+stagings alheios. Não monta servidor nem copia imagens reais.
 
 Eles cobrem gzip interno, formato Zstandard publicado, integridade cruzada do
 manifest e SHA256SUMS, rejeição de corrupção, staging local, build NFS simulado,
