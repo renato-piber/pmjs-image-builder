@@ -143,10 +143,7 @@ cp -- "${final_dir}/rootfs.tar.zst" "${failure_workspace}/rootfs.tar.zst"
 cp -- "${final_dir}/homefs.tar.zst" "${failure_workspace}/homefs.tar.zst"
 if (
     sha256sum() {
-        if [[ " $* " == *' --check '* ]]; then
-            return 73
-        fi
-        command sha256sum "$@"
+        return 73
     }
     build_metadata_artifacts "${failure_workspace}" \
         "${failure_workspace}/rootfs.tar.zst" \

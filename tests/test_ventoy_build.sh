@@ -54,7 +54,6 @@ findmnt() {
     esac
 }
 
-log_write() { :; }
 init_log "${test_root}/logs"
 
 # O modo é explícito, mutuamente exclusivo com NFS e não consulta o servidor.
@@ -125,6 +124,11 @@ finalize_build_workspace "${workspace}" "${final_dir}"
 workspace=""
 check_active_build_destination "após o teste de commit"
 validate_image_directory "${final_dir}"
+grep -Eq -- '\[PERF\] bundle.rootfs.integrity.zstd end .*status=0 .*access=full_read\+full_decompression' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] bundle.rootfs.tar_listing end .*status=0 .*throughput_mib_s=' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] publication.sync.pre_rename end .*status=0 .*access=filesystem_flush' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] publication.rename end .*status=0 .*access=filesystem_metadata' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] publication.sync.post_rename end .*status=0 .*access=filesystem_flush' "${LOG_FILE}"
 
 # A generalização continua idêntica: identidade e host keys não entram, mas o
 # mecanismo ssh-keygen -A entra no rootfs. Symlink e xattr continuam no tar.
@@ -172,6 +176,7 @@ if validate_image_directory "${invalid_workspace}" >/dev/null 2>&1; then
     printf '%s\n' 'Bundle corrompido no Ventoy foi aceito' >&2
     exit 1
 fi
+grep -Eq -- '\[PERF\] bundle.rootfs.integrity.zstd end .*status=[1-9][0-9]*' "${LOG_FILE}"
 [[ ! -e "${invalid_final}" ]]
 cleanup_build_workspace "${invalid_workspace}" "${ventoy_dir}"
 

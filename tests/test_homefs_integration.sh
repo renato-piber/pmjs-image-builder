@@ -71,6 +71,11 @@ staging_path="$(awk -F': ' '/Staging do homefs:/ { value=$NF } END { print value
 [[ "${staging_path}" != "${build_dir}" && "${staging_path}" != "${build_dir}/"* ]]
 grep -Fq -- 'Filesystem do staging do homefs:' "${LOG_FILE}"
 grep -Fq -- "Archive final do homefs: ${archive_file}" "${LOG_FILE}"
+grep -Eq -- '\[PERF\] homefs.staging.prepare end .*status=0' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] homefs.staging.validation end .*status=0' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] homefs.create end .*status=0 .*size_bytes=[0-9]+ .*filesystem=' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] homefs.integrity.gzip end .*access=full_read\+full_decompression' "${LOG_FILE}"
+! grep -Fq -- '[PERF] homefs.tar_listing.final' "${LOG_FILE}"
 mapfile -t entries < <(tar --list --gzip --file "${archive_file}")
 printf '%s\n' "${entries[@]}"
 

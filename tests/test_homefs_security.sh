@@ -52,4 +52,26 @@ if validate_homefs_archive "${wrong_archive}" "${home_user}" Desktop; then
     exit 1
 fi
 
+dangerous_archive="${test_root}/dangerous.tar.gz"
+python3 - "${dangerous_archive}" "${home_user}" <<'PY'
+import io
+import sys
+import tarfile
+
+archive, user = sys.argv[1:]
+with tarfile.open(archive, "w:gz") as stream:
+    root = tarfile.TarInfo(user + "/")
+    root.type = tarfile.DIRTYPE
+    stream.addfile(root)
+    payload = b"escape\n"
+    unsafe = tarfile.TarInfo(user + "/../escape")
+    unsafe.size = len(payload)
+    stream.addfile(unsafe, io.BytesIO(payload))
+PY
+IMAGE_COMPRESSION=gzip
+if validate_homefs_archive "${dangerous_archive}" "${home_user}" Desktop; then
+    printf 'Archive com nome perigoso foi aceito\n' >&2
+    exit 1
+fi
+
 printf 'OK: homefs rejeitou symlink externo, FIFO e raiz incorreta\n'

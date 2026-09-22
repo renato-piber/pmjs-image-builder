@@ -81,5 +81,11 @@ for expected_option in \
     grep -Fq -- "${expected_option}" "${LOG_FILE}"
 done
 grep -Fq -- 'Staging de generalização:' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] rootfs.create start .*access=source_read\+archive_write' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] rootfs.create end elapsed=[0-9]+\.[0-9]{3}s status=0 .*size_bytes=[0-9]+ .*filesystem=' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] rootfs.integrity.gzip end .*status=0 .*throughput_mib_s=' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] rootfs.tar_listing.members end .*access=full_read\+full_decompression' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] rootfs.generalization.content end .*target_member=archive_tail' "${LOG_FILE}"
+! grep -Fq -- '[PERF] rootfs.tar_listing.final' "${LOG_FILE}"
 
 printf 'OK: fluxo integrado do build produziu rootfs generalizado\n'

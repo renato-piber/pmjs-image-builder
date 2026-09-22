@@ -7,10 +7,20 @@ readonly TEST_PROJECT_DIR="$(cd -- "${TEST_DIR}/.." && pwd -P)"
 source "${TEST_PROJECT_DIR}/build-image.sh"
 
 ui_error() { printf 'ERRO: %s\n' "$*" >&2; }
-log_write() { :; }
 
 test_root="$(mktemp -d)"
 trap '[[ -n "${test_root:-}" && "${test_root}" == /tmp/* ]] && rm -rf -- "${test_root}"' EXIT
+mkdir -p -- "${test_root}/logs"
+init_log "${test_root}/logs"
+
+root_reads=0
+root_decompressions=0
+home_reads=0
+home_decompressions=0
+derive_build_io_pass_counts false root_reads root_decompressions home_reads home_decompressions
+[[ "${root_reads}:${root_decompressions}:${home_reads}:${home_decompressions}" == 7:5:6:4 ]]
+derive_build_io_pass_counts true root_reads root_decompressions home_reads home_decompressions
+[[ "${root_reads}:${root_decompressions}:${home_reads}:${home_decompressions}" == 14:9:13:8 ]]
 
 # VERSION identifica o software Builder; IMAGE_VERSION identifica somente o
 # artefato produzido. Uma divergência deliberada não pode bloquear o build.
@@ -64,9 +74,28 @@ root_archive="${build_dir}/rootfs.tar.zst"
 home_archive="${build_dir}/homefs.tar.zst"
 checksums="${build_dir}/SHA256SUMS"
 manifest="${build_dir}/manifest.json"
+sha_events="${test_root}/metadata-sha-events"
+sha256sum() {
+    printf '%s\n' "$*" >> "${sha_events}"
+    command sha256sum "$@"
+}
 build_metadata_artifacts "${build_dir}" "${root_archive}" "${home_archive}" \
     "${checksums}" "${manifest}" pmjs-linux "${IMAGE_VERSION}" \
     "${builder_version}" zstd "${source_root}"
+unset -f sha256sum
+[[ "$(wc -l < "${sha_events}")" -eq 1 ]]
+mapfile -t checksum_hashes < <(awk '{print $1}' "${checksums}")
+mapfile -t manifest_hashes < <(python3 - "${manifest}" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    data = json.load(stream)
+print(data["rootfs"]["sha256"])
+print(data["homefs"]["sha256"])
+PY
+)
+[[ "${checksum_hashes[0]}" == "${manifest_hashes[0]}" ]]
+[[ "${checksum_hashes[1]}" == "${manifest_hashes[1]}" ]]
 validate_checksums "${build_dir}" "${checksums}"
 validate_manifest "${manifest}" "${root_archive}" "${home_archive}" zstd
 grep -Fq -- 'rootfs.tar.zst' "${manifest}"
@@ -76,11 +105,51 @@ grep -Fq -- '"builder_version": "1.2.3-builder"' "${manifest}"
 ! grep -Fq -- '.partial' "${checksums}"
 [[ ! -e "${checksums}.partial" && ! -e "${manifest}.partial" ]]
 
+copy_valid_bundle() {
+    local parent=$1 bundle filename
+    bundle="${parent}/pmjs-linux-${IMAGE_VERSION}"
+    mkdir -p -- "${bundle}"
+    for filename in rootfs.tar.zst homefs.tar.zst SHA256SUMS manifest.json; do
+        cp -- "${build_dir}/${filename}" "${bundle}/${filename}"
+    done
+    printf '%s\n' "${bundle}"
+}
+
+valid_bundle="$(copy_valid_bundle "${test_root}/valid")"
+validate_image_directory "${valid_bundle}"
+
+corrupt_root_bundle="$(copy_valid_bundle "${test_root}/corrupt-root")"
+printf 'corrupção-root\n' >> "${corrupt_root_bundle}/rootfs.tar.zst"
+if validate_image_directory "${corrupt_root_bundle}" >/dev/null 2>&1; then
+    printf 'Corrupção do rootfs foi aceita\n' >&2
+    exit 1
+fi
+
+corrupt_home_bundle="$(copy_valid_bundle "${test_root}/corrupt-home")"
+printf 'corrupção-home\n' >> "${corrupt_home_bundle}/homefs.tar.zst"
+if validate_image_directory "${corrupt_home_bundle}" >/dev/null 2>&1; then
+    printf 'Corrupção do homefs foi aceita\n' >&2
+    exit 1
+fi
+
+truncated_bundle="$(copy_valid_bundle "${test_root}/truncated")"
+truncate -s -1 -- "${truncated_bundle}/rootfs.tar.zst"
+if validate_image_directory "${truncated_bundle}" >/dev/null 2>&1; then
+    printf 'Archive truncado foi aceito\n' >&2
+    exit 1
+fi
+
 printf 'corrupção\n' >> "${root_archive}"
 if validate_checksums "${build_dir}" "${checksums}" >/dev/null 2>&1; then
     printf 'Checksum incorreto foi aceito\n' >&2
     exit 1
 fi
+grep -Eq -- '\[PERF\] metadata.sha256sums.generate end .*status=0 .*throughput_mib_s=' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] metadata.sha256sums.verify end .*status=1' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] metadata.sha256sums.verify.reused end .*status=0 .*access=no_archive_read' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] metadata.manifest.hashes.reused end .*status=0 .*access=no_archive_read' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] metadata.manifest.validate.reused end .*status=0 .*access=no_archive_read' "${LOG_FILE}"
+grep -Eq -- '\[PERF\] metadata.manifest.validate end .*status=0 .*access=two_full_reads' "${LOG_FILE}"
 
 (
     command() {
