@@ -39,8 +39,8 @@ finalize_build_workspace() {
 check_root() { :; }
 check_dependencies() { :; }
 check_nfs_dependencies() { :; }
-eval "$(declare -f select_interactive_ventoy_copy | sed '1s/select_interactive_ventoy_copy/select_interactive_ventoy_copy_actual/')"
-select_interactive_ventoy_copy() {
+eval "$(declare -f select_interactive_build_destinations | sed '1s/select_interactive_build_destinations/select_interactive_build_destinations_actual/')"
+select_interactive_build_destinations() {
     # As leituras reais do terminal têm cobertura em test_image_naming.py;
     # aqui conferir o restante do main com a identidade escolhida previamente.
     if [[ "${scenario}" == interactive_selected ]]; then
@@ -48,7 +48,7 @@ select_interactive_ventoy_copy() {
         BUILD_ALSO_VENTOY_DIR=${VENTOY_DESTINATION}
         BUILD_VENTOY_COPY_SELECTED_INTERACTIVELY=true
     else
-        select_interactive_ventoy_copy_actual
+        select_interactive_build_destinations_actual
     fi
 }
 select_build_image_version() {

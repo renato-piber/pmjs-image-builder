@@ -262,27 +262,34 @@ mesmo com configuração automática habilitada. Configuração antiga com
 `VENTOY_AUTOMOUNT_ENABLED` ausente mantém a pergunta manual; `0` também mantém
 essa pergunta. `auto` explícito ainda exige os três parâmetros de descoberta.
 
-### Gerar no NFS e copiar automaticamente na mesma execução
+### Escolher NFS, Ventoy ou ambos no lançador
 
 Ao clicar no lançador **PMJS Image Builder** da Live, o terminal chama
-`build-image.sh` sem argumentos. Com NFS configurado, depois de escolher a versão
-aparece a pergunta:
+`build-image.sh` sem argumentos. Depois de escolher a versão aparece o menu:
 
 ```text
-Copiar também para o Ventoy após publicar no NFS? [S/n]:
+Onde deseja publicar a nova imagem?
+  1) Servidor NFS
+  2) Ventoy
+  3) NFS e Ventoy
+
+Escolha [1]:
 ```
 
-Enter seleciona **Sim**. Com `VENTOY_AUTOMOUNT_ENABLED=1`, o preflight monta ou
-reutiliza o Ventoy automaticamente conforme a configuração acima, mostra o
-destino confirmado e cria `pmjs-images` apenas na mídia validada. Não pede o
-caminho. Responder `n` mantém somente o NFS. EOF/Ctrl+D cancela a pergunta antes
-de qualquer mount/captura. Nenhum mount real é feito apenas para perguntar.
+Enter ou `1` seleciona somente o NFS configurado. `2` seleciona build direto no
+Ventoy. `3` gera/publica primeiro no NFS e depois copia o mesmo bundle validado
+para o Ventoy. As opções `2` e `3` sempre perguntam
+`Diretório pmjs-images do Ventoy:`. Informe, por exemplo,
+`/media/usuario/Ventoy/pmjs-images`: a pasta deve existir numa mídia montada e
+gravável. O menu não presume path, não cria diretório, não monta mídia e não
+inicia captura. Caminho inválido repete a pergunta; EOF/Ctrl+D cancela antes de
+logs, mounts ou captura. A identidade confirmada é revalidada no preflight.
 
-Com automount `0`/ausente, a próxima pergunta continua sendo
-`Diretório pmjs-images do Ventoy:`. Informe por exemplo
-`/media/usuario/Ventoy/pmjs-images` (pasta existente na mídia montada). Nesse
-modo não cria caminhos nem monta mídia; entradas inválidas repetem a pergunta.
-O preflight mantém a identidade confirmada durante a pergunta manual.
+O menu pede o caminho mesmo com `VENTOY_AUTOMOUNT_ENABLED=1`. A descoberta
+automática permanece disponível explicitamente com `--ventoy-dir auto` ou
+`--also-ventoy-dir auto`. Se NFS não estiver configurado, `1` e `3` são
+rejeitadas e o menu permite escolher `2`.
+
 O lançador/wrapper existente já é compatível; não precisa de argumentos novos.
 Para disponibilizar esse fluxo na ISO, atualize os snapshots com
 `pmjs-live-builder/tools/update-pmjs-snapshots.sh` antes da próxima build da Live.
@@ -304,11 +311,12 @@ sudo ./build-image.sh \
 Usa o NFS automático de `config/image.conf`. Também aceita
 `--nfs-dir /mnt/clone-pmjs --also-ventoy-dir /media/usuario/Ventoy/pmjs-images`
 para um NFS já montado, inclusive outro export/subdiretório. A pergunta inicial
-define a identidade única usada nos dois destinos. `--also-ventoy-dir` pula a
-pergunta sobre cópia/caminho e usa o destino explícito. Sem terminal interativo,
-nenhuma pergunta é feita e a cópia dupla continua exigindo essa opção.
-Build local e `--ventoy-dir` também omitem a pergunta de cópia para não mudar
-seu destino. Não combinar com `--ventoy-dir`: essa opção
+define a identidade única usada nos dois destinos. `--also-ventoy-dir` pula o
+menu e usa o destino explícito. Sem terminal interativo, nenhuma pergunta é
+feita e a cópia dupla continua exigindo essa opção. `--ventoy-dir` também omite
+o menu. Por compatibilidade, `--nfs-dir` sozinho mantém a pergunta antiga de
+cópia adicional; combine-o com `--also-ventoy-dir` para evitar perguntas. Não
+combinar `--also-ventoy-dir` com `--ventoy-dir`: essa opção
 continua sendo o build direto no Ventoy, sem NFS. Se a seleção produzir somente
 OUTPUT_DIR local, a opção dupla aborta antes da captura.
 

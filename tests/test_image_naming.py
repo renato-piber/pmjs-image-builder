@@ -24,7 +24,8 @@ class ImageNamingTests(unittest.TestCase):
         self.assertEqual((ROOT / "VERSION").read_bytes(), self.original_version)
 
     def run_selection(self, data=b"\n", *, terminal=True, name="pmjs-linux", body="",
-                      main=False, copy_prompt=False, setup="", automount=False):
+                      main=False, copy_prompt=False, destination_prompt=False,
+                      setup="", automount=False):
         script = '''source "$1/build-image.sh"
 trap - EXIT ERR INT TERM
 log_write() { :; }
@@ -64,6 +65,7 @@ init_log() { :; }
 select_build_destination() {
     printf 'DESTINATION_REACHED=%s-%s\\n' "$IMAGE_NAME" "$IMAGE_VERSION"
     printf 'DUAL_REACHED=%s\\n' "$BUILD_ALSO_VENTOY_DIR"
+    printf 'DIRECT_REACHED=%s\\n' "$BUILD_VENTOY_DIR"
     return 1
 }
 detect_capture_sources() { echo 'UNEXPECTED_CAPTURE'; exit 99; }
@@ -71,11 +73,14 @@ detect_capture_sources() { echo 'UNEXPECTED_CAPTURE'; exit 99; }
             operation = "main"
         elif copy_prompt:
             operation = "select_interactive_ventoy_copy"
+        elif destination_prompt:
+            operation = "select_interactive_build_destinations"
         else:
             operation = "select_build_image_version"
         script += f'''if {operation}; then status=0; else status=$?; fi
 printf 'RESULT=%s-%s;SOURCE=%s;STATUS=%s\\n' "$IMAGE_NAME" "$IMAGE_VERSION" "$IMAGE_VERSION_SOURCE" "$status"
 printf 'COPY_DEST=%s\\n' "$BUILD_ALSO_VENTOY_DIR"
+printf 'DIRECT_DEST=%s\\n' "$BUILD_VENTOY_DIR"
 '''
         script += body
         env = dict(os.environ, PMJS_NAME_TEST_DIR=str(self.directory))
@@ -178,10 +183,12 @@ printf 'COPY_DEST=%s\\n' "$BUILD_ALSO_VENTOY_DIR"
         self.assertNotIn("Diretório pmjs-images do Ventoy", err)
         self.assertEqual(list(self.directory.iterdir()), [])
 
-    def test_main_launcher_automount_passes_auto_to_preflight(self):
-        out, err = self.run_selection(b"0.8.0\n\n", main=True, automount=True)
-        self.assertIn("DUAL_REACHED=auto\n", out)
-        self.assertNotIn("Diretório pmjs-images do Ventoy", err)
+    def test_main_launcher_menu_asks_path_even_with_automount_enabled(self):
+        destination = self.ventoy_fixture()
+        out, err = self.run_selection(f"0.8.0\n3\n{destination}\n".encode(),
+                                      main=True, automount=True)
+        self.assertIn(f"DUAL_REACHED={destination}\n", out)
+        self.assertIn("Diretório pmjs-images do Ventoy", err)
 
     def test_launcher_media_changed_after_selection_rejected_before_build(self):
         destination = self.ventoy_fixture()
@@ -264,19 +271,85 @@ if prepare_build_ventoy_copy; then exit 99; fi
 
     def test_main_launcher_passes_interactive_copy_to_preflight(self):
         destination = self.ventoy_fixture()
-        out, _ = self.run_selection(f"0.8.0\n\n{destination}\n".encode(), main=True)
+        out, _ = self.run_selection(f"0.8.0\n3\n{destination}\n".encode(), main=True)
         self.assertIn("DESTINATION_REACHED=pmjs-linux-0.8.0", out)
         self.assertIn(f"DUAL_REACHED={destination}\n", out)
         self.assertNotIn("UNEXPECTED_CAPTURE", out)
 
+    def test_main_launcher_passes_direct_ventoy_to_preflight(self):
+        destination = self.ventoy_fixture()
+        out, _ = self.run_selection(f"0.8.1\n2\n{destination}\n".encode(), main=True)
+        self.assertIn("DESTINATION_REACHED=pmjs-linux-0.8.1", out)
+        self.assertIn(f"DIRECT_REACHED={destination}\n", out)
+        self.assertIn("DUAL_REACHED=\n", out)
+        self.assertNotIn("UNEXPECTED_CAPTURE", out)
+
     def test_main_launcher_cancels_before_mounts_logs_or_capture(self):
-        for data in (b"0.8.0\n\x04", b"0.8.0\n\n\x04"):
+        for data in (b"0.8.0\n\x04", b"0.8.0\n2\n\x04", b"0.8.0\n3\n\x04"):
             with self.subTest(data=data):
                 out, _ = self.run_selection(data, main=True)
                 self.assertIn("STATUS=1", out)
                 self.assertNotIn("DESTINATION_REACHED", out)
                 self.assertNotIn("UNEXPECTED_CAPTURE", out)
                 self.assertEqual(list(self.directory.iterdir()), [])
+
+    def test_destination_menu_defaults_to_nfs(self):
+        out, err = self.run_selection(b"\n", destination_prompt=True)
+        self.assertIn("Destino selecionado: somente NFS", out)
+        self.assertIn("Onde deseja publicar", out)
+        self.assertIn("Escolha [1]", err)
+        self.assertIn("DIRECT_DEST=\n", out)
+        self.assertIn("COPY_DEST=\n", out)
+
+    def test_destination_menu_direct_ventoy_asks_and_validates_path(self):
+        destination = self.ventoy_fixture()
+        out, err = self.run_selection(f"2\n{destination}\n".encode(),
+                                      destination_prompt=True,
+                                      setup="VENTOY_AUTOMOUNT_ENABLED=1")
+        self.assertIn(f"DIRECT_DEST={destination}\n", out)
+        self.assertIn("COPY_DEST=\n", out)
+        self.assertIn("Diretório pmjs-images do Ventoy", err)
+        self.assertNotIn("Ventoy automático", out)
+        self.assertEqual(list(destination.iterdir()), [])
+
+    def test_destination_menu_both_asks_path(self):
+        destination = self.ventoy_fixture()
+        out, err = self.run_selection(f"3\n{destination}\n".encode(),
+                                      destination_prompt=True)
+        self.assertIn(f"COPY_DEST={destination}\n", out)
+        self.assertIn("DIRECT_DEST=\n", out)
+        self.assertIn("NFS + Ventoy", out)
+        self.assertIn("Diretório pmjs-images do Ventoy", err)
+
+    def test_destination_menu_reprompts_invalid_choice_and_missing_nfs(self):
+        destination = self.ventoy_fixture()
+        out, err = self.run_selection(f"talvez\n1\n3\n2\n{destination}\n".encode(),
+                                      destination_prompt=True,
+                                      setup="NFS_ENABLED=0; NFS_IMAGES_DIR=''")
+        self.assertIn("Opção inválida", err)
+        self.assertIn("Destino NFS não está configurado", err)
+        self.assertIn("A opção ambos exige", err)
+        self.assertEqual(out.count("Onde deseja publicar"), 4)
+        self.assertIn(f"DIRECT_DEST={destination}\n", out)
+
+    def test_destination_menu_explicit_ventoy_options_skip_prompt(self):
+        for setup in ("BUILD_VENTOY_DIR=/explicit/pmjs-images",
+                      "BUILD_ALSO_VENTOY_DIR=/explicit/pmjs-images"):
+            with self.subTest(setup=setup):
+                out, err = self.run_selection(
+                    b"unread-data\n", destination_prompt=True, setup=setup,
+                    body='read -r remaining; printf "UNREAD=%s\\n" "$remaining"\n')
+                self.assertIn("UNREAD=unread-data", out)
+                self.assertNotIn("Onde deseja publicar", out)
+                self.assertNotIn("Escolha [1]", err)
+
+    def test_destination_menu_noninteractive_does_not_consume_stdin(self):
+        out, err = self.run_selection(
+            b"pipe-data\n", terminal=False, destination_prompt=True,
+            body='read -r remaining; printf "UNREAD=%s\\n" "$remaining"\n')
+        self.assertIn("UNREAD=pipe-data", out)
+        self.assertNotIn("Onde deseja publicar", out)
+        self.assertNotIn("Escolha [1]", err)
 
     def test_chosen_version_in_workspace_and_schema1_manifest(self):
         (self.directory / "output").mkdir()

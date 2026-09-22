@@ -157,9 +157,12 @@ Em terminal interativo, pergunta o sufixo/versão da nova imagem antes de montar
 destinos ou capturar arquivos. Aceita '0.3.0' ou 'pmjs-linux-0.3.0' (com o prefixo
 IMAGE_NAME configurado); Enter mantém o padrão de config/image.conf.
 Sem terminal interativo, mantém nome/versão da configuração, sem ler stdin.
-Em terminal e com destino NFS, também oferece a cópia para o Ventoy [S/n].
+Sem opções de destino e em terminal interativo, pergunta se a imagem deve ser
+publicada no NFS, diretamente no Ventoy ou em ambos. Ventoy e ambos sempre
+pedem o caminho da pasta pmjs-images já montada. Enter seleciona somente NFS.
 VENTOY_AUTOMOUNT_ENABLED=1 detecta/monta a mídia configurada automaticamente;
-com 0/ausente pede o caminho manual. O lançador da Live usa esse fluxo.
+esse automount continua disponível pelas opções CLI com valor auto. O lançador
+da Live usa o menu interativo e o caminho informado pelo operador.
 --also-ventoy-dir auto e --ventoy-dir auto habilitam descoberta explicitamente.
 
 Com --also-ventoy-dir, exige build NFS (automático ou --nfs-dir) e depois copia
@@ -259,6 +262,103 @@ select_interactive_ventoy_copy() {
         BUILD_VENTOY_COPY_SELECTED_INTERACTIVELY=true
         ui_info "Destinos selecionados: NFS + Ventoy (${BUILD_ALSO_VENTOY_DIR})"
         return 0
+    done
+}
+
+build_has_configured_nfs_destination() {
+    [[ -n "${BUILD_NFS_DIR}" ]] && return 0
+    case "${NFS_ENABLED:-0}" in
+        1) return 0 ;;
+        0) [[ -n "${NFS_IMAGES_DIR:-}" ]] ;;
+        *) return 1 ;;
+    esac
+}
+
+select_manual_ventoy_destination() {
+    local destination_kind=$1 requested_dir
+
+    check_ventoy_dependencies || return 1
+    ui_info "Informe a pasta pmjs-images da mídia Ventoy já montada; nenhum caminho será presumido."
+    while true; do
+        if ! read -r -p "Diretório pmjs-images do Ventoy: " requested_dir; then
+            ui_error "Seleção dos destinos cancelada; build não iniciado."
+            return 1
+        fi
+        if [[ -z "${requested_dir}" ]]; then
+            ui_error "O caminho do Ventoy é obrigatório; Ctrl+D cancela o build."
+            continue
+        fi
+        # Seleção continua sem efeitos: apenas confirma diretório, mount e
+        # identidade. Staging/mkdir/cópia só ocorrem após todos os preflights.
+        if ! validate_ventoy_sync_destination "${requested_dir}"; then
+            continue
+        fi
+        case "${destination_kind}" in
+            ventoy)
+                BUILD_VENTOY_DIR=${VENTOY_DESTINATION}
+                ui_info "Destino selecionado: somente Ventoy (${BUILD_VENTOY_DIR})"
+                ;;
+            both)
+                BUILD_ALSO_VENTOY_DIR=${VENTOY_DESTINATION}
+                BUILD_VENTOY_COPY_SELECTED_INTERACTIVELY=true
+                ui_info "Destinos selecionados: NFS + Ventoy (${BUILD_ALSO_VENTOY_DIR})"
+                ;;
+            *)
+                ui_error "Seleção interna de destino inválida: ${destination_kind}"
+                return 1
+                ;;
+        esac
+        return 0
+    done
+}
+
+select_interactive_build_destinations() {
+    local answer
+
+    [[ -t 0 ]] || return 0
+    # Qualquer destino Ventoy explícito já expressa toda a intenção do comando.
+    [[ -z "${BUILD_VENTOY_DIR}" && -z "${BUILD_ALSO_VENTOY_DIR}" ]] || return 0
+    # Preserva o comportamento histórico de --nfs-dir: ainda é possível pedir
+    # a cópia adicional; --also-ventoy-dir continua sendo a forma não interativa.
+    if [[ -n "${BUILD_NFS_DIR}" ]]; then
+        select_interactive_ventoy_copy
+        return $?
+    fi
+
+    while true; do
+        printf '\nOnde deseja publicar a nova imagem?\n'
+        printf '  1) Servidor NFS\n'
+        printf '  2) Ventoy\n'
+        printf '  3) NFS e Ventoy\n\n'
+        if ! read -r -p "Escolha [1]: " answer; then
+            ui_error "Seleção dos destinos cancelada; build não iniciado."
+            return 1
+        fi
+        case "${answer}" in
+            ''|1|n|N|nfs|NFS)
+                if ! build_has_configured_nfs_destination; then
+                    ui_error "Destino NFS não está configurado; escolha Ventoy ou configure o NFS."
+                    continue
+                fi
+                ui_info "Destino selecionado: somente NFS"
+                return 0
+                ;;
+            2|v|V|ventoy|Ventoy|VENTOY)
+                select_manual_ventoy_destination ventoy
+                return $?
+                ;;
+            3|a|A|ambos|Ambos|AMBOS)
+                if ! build_has_configured_nfs_destination; then
+                    ui_error "A opção ambos exige um destino NFS configurado."
+                    continue
+                fi
+                select_manual_ventoy_destination both
+                return $?
+                ;;
+            *)
+                ui_error "Opção inválida: escolha 1 (NFS), 2 (Ventoy) ou 3 (ambos)."
+                ;;
+        esac
     done
 }
 
@@ -553,7 +653,7 @@ main() {
     validate_config
     select_build_image_version || return 1
     validate_config
-    select_interactive_ventoy_copy || return 1
+    select_interactive_build_destinations || return 1
     check_compression_dependency "${IMAGE_COMPRESSION}"
     load_builder_version "${version_file}" builder_version
     extension="$(archive_extension "${IMAGE_COMPRESSION}")"
